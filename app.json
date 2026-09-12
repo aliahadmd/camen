@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "Camen",
+    "slug": "camen",
+    "version": "1.6.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0C0E",
+    "splash": {
+      "backgroundColor": "#0B0C0E",
+      "resizeMode": "contain"
+    },
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.camen.app",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camen needs the camera to take photos.",
+        "NSPhotoLibraryAddUsageDescription": "Camen saves your photos to your gallery."
+      }
+    },
+    "android": {
+      "package": "com.camen.app",
+      "permissions": [
+        "android.permission.CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-status-bar",
+      [
+        "expo-media-library",
+        {
+          "savePhotosPermission": "Camen saves your photos to your gallery.",
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      "expo-sqlite",
+      "react-native-vision-camera"
+    ]
+  }
+}
