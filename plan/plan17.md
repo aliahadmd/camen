@@ -1,5 +1,16 @@
 # Chapter 17 — GPU Grading Migration (VisionCamera + Skia, dev build)
 
+> **RESOLVED — SUPERSEDED (2026-09-12, v1.9.0).** The v1.9.0 full audit removed
+> `react-native-vision-camera` and `@shopify/react-native-skia` as unused
+> dependencies. This chapter's goal — real pixel-level grading — is already met
+> by the pure-JS develop pipeline (`src/features/gradePhoto.ts`: LUT tone
+> curves, luminance-masked shadows/highlights, split-toning, micro-contrast,
+> sharpen, rolloff, grain, vignette), and live-preview feedback is provided by
+> the preset/filter veil layers. A GPU frame-processor remains a possible
+> future optimization (exact-look preview, zero develop delay), not a shipped
+> feature; the checklist below is retained for that future only.
+
+
 **Goal:** Replace the JS develop pipeline and the overlay-tint preview with
 **GPU grading on the camera stream** using `react-native-vision-camera` +
 `@shopify/react-native-skia`. Same look on the live preview and the saved file,

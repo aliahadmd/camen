@@ -297,3 +297,12 @@ events during back-to-back develops — fallback kept the shots; not since.
 Workflow note: Expo Go can serve a stale dev bundle after Metro restarts —
 force-stop the app (or `pm clear host.exp.exponent`) before trusting UI
 verification.
+
+## 2026-09-12 — v1.9.0 release
+
+- App icon set (brass shutter ring on ink), adaptive + monochrome + splash.
+- Settings footer: hardcoded "Developed by Ali" → x.com/AliAhadMd1.
+- Plan closed: ch10 ☑ (local signed APK + GitHub release), ch17 superseded
+  (JS pipeline retained; VisionCamera/Skia removed in audit), ch8 v2 noted.
+- README with sideload + build instructions.
+- Locally signed release APK (keystore/camen-release.jks, git-ignored).

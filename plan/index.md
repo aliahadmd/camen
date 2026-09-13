@@ -45,16 +45,16 @@ of deliberate controls. No settings forests, no clutter. Everything you need in 
 | 5 | Grid overlays | [plan5.md](plan5.md) | ☑ |
 | 6 | Zoom: pinch + hardware presets | [plan6.md](plan6.md) | ☑ |
 | 7 | Capture timer (2/5/10/custom) | [plan7.md](plan7.md) | ☑ |
-| 8 | Men's filter system (horizontal carousel) | [plan8.md](plan8.md) | ☑ (v1; v2 pixel filters pending dev build) |
+| 8 | Men's filter system (horizontal carousel) | [plan8.md](plan8.md) | ☑ (v2 real pixel grading shipped via the pure-JS develop pipeline) |
 | 9 | Capture pipeline, gallery & settings persistence | [plan9.md](plan9.md) | ☑ |
-| 10 | Polish, on-device testing & release build | [plan10.md](plan10.md) | ◐ (polish + on-device tests done; EAS build pending) |
+| 10 | Polish, on-device testing & release build | [plan10.md](plan10.md) | ☑ (local signed APK built + installed; GitHub release tagged) |
 | 11 | Edge Light (front-camera fill light) | [plan11.md](plan11.md) | ☑ |
 | 12 | Masculine grade system (real capture filters) | [plan12.md](plan12.md) | ☑ |
 | 13 | Camera data (SQLite), picture sizes & shot preview | [plan13.md](plan13.md) | ☑ |
 | 14 | Named framings (Instagram/Square/…) & settings screen | [plan14.md](plan14.md) | ☑ |
 | 15 | Pro capture suite (EV, anti-shake, rapid fire, HDR/AEB/ISO, location, format) | [plan15.md](plan15.md) | ☑ |
 | 16 | Zoom scrollbar, reusable ruler & richer haptics | [plan16.md](plan16.md) | ☑ |
-| 17 | GPU grading migration (VisionCamera + Skia, dev build) | [plan17.md](plan17.md) | ☐ gated on dev build |
+| 17 | GPU grading migration (VisionCamera + Skia, dev build) | [plan17.md](plan17.md) | ☑ superseded — see plan17.md resolution note |
 | 18 | Capture presets & sub-presets (PRO selector) | [plan18.md](plan18.md) | ☑ |
 
 Implementation notes and deviations found during on-device testing are recorded in

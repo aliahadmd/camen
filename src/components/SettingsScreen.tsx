@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
@@ -246,6 +246,19 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
             </Text>
           </View>
         </View>
+
+        {/* Hardcoded credit — this line never comes from settings or storage. */}
+        <Pressable
+          onPress={() => {
+            void Linking.openURL('https://x.com/AliAhadMd1').catch(() => {});
+          }}
+          style={styles.credit}
+          accessibilityRole="link"
+          accessibilityLabel="Developed by Ali on X"
+        >
+          <Text style={styles.creditText}>Developed by Ali</Text>
+          <Text style={styles.creditLink}>x.com/AliAhadMd1</Text>
+        </Pressable>
       </ScrollView>
     </View>
   );
@@ -353,5 +366,24 @@ const styles = StyleSheet.create({  wrap: {
   },
   isoPillTextActive: {
     color: colors.ink,
+  },
+  credit: {
+    alignItems: 'center',
+    gap: 2,
+    paddingVertical: spacing.xl,
+    marginTop: spacing.l,
+  },
+  creditText: {
+    ...labelStyle,
+    color: colors.bone,
+    fontSize: 11,
+    letterSpacing: 1.5,
+  },
+  creditLink: {
+    ...labelStyle,
+    color: colors.brass,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    ...monoFont,
   },
 });

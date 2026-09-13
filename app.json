@@ -6,7 +6,9 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0C0E",
+    "icon": "./assets/icon.png",
     "splash": {
+      "image": "./assets/splash-icon.png",
       "backgroundColor": "#0B0C0E",
       "resizeMode": "contain"
     },
@@ -26,7 +28,12 @@
       "package": "com.camen.app",
       "permissions": [
         "android.permission.CAMERA"
-      ]
+      ],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochrome": "./assets/monochrome.png",
+        "backgroundColor": "#0B0C0E"
+      }
     },
     "plugins": [
       "expo-status-bar",
