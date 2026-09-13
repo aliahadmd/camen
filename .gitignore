@@ -5,3 +5,4 @@ dist/
 keystore/
 android/
 ios/
+*.apk
