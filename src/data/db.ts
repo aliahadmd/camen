@@ -28,6 +28,8 @@ export type ShotRow = {
   aeb: number;
   lat: number | null;
   lon: number | null;
+  preset_id: string;
+  preset_sub: string;
 };
 
 export type NewShot = Omit<ShotRow, 'id'>;
@@ -70,6 +72,8 @@ for (const col of [
   'aeb INTEGER',
   'lat REAL',
   'lon REAL',
+  'preset_id TEXT',
+  'preset_sub TEXT',
 ]) {
   try {
     db.execSync(`ALTER TABLE shots ADD COLUMN ${col}`);
@@ -83,8 +87,8 @@ export function insertShot(s: NewShot): number {
     `INSERT INTO shots
        (created_at, path, thumb_path, gallery_uri, filter_id, facing,
         width, height, size_bytes, flash_mode, zoom_ratio, timer_seconds,
-        edge_light, device, framing, ev, iso, tone, aeb, lat, lon)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        edge_light, device, framing, ev, iso, tone, aeb, lat, lon, preset_id, preset_sub)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       s.created_at,
       s.path,
@@ -107,6 +111,8 @@ export function insertShot(s: NewShot): number {
       s.aeb,
       s.lat,
       s.lon,
+      s.preset_id,
+      s.preset_sub,
     ],
   );
   return res.lastInsertRowId;

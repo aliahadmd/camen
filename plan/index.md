@@ -55,6 +55,7 @@ of deliberate controls. No settings forests, no clutter. Everything you need in 
 | 15 | Pro capture suite (EV, anti-shake, rapid fire, HDR/AEB/ISO, location, format) | [plan15.md](plan15.md) | ☑ |
 | 16 | Zoom scrollbar, reusable ruler & richer haptics | [plan16.md](plan16.md) | ☑ |
 | 17 | GPU grading migration (VisionCamera + Skia, dev build) | [plan17.md](plan17.md) | ☐ gated on dev build |
+| 18 | Capture presets & sub-presets (PRO selector) | [plan18.md](plan18.md) | ☑ |
 
 Implementation notes and deviations found during on-device testing are recorded in
 [CHANGELOG.md](CHANGELOG.md).

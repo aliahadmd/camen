@@ -1,5 +1,35 @@
 # Camen — CHANGELOG
 
+## 1.8.0 (2026-09-13) — Preset ears on the shutter row
+
+- **Preset ear (left of shutter)**: shows the active capture preset name; tap
+  opens the preset picker docked above the shutter row (never covering it).
+- **Sub-preset ear (right of shutter)**: shows the active sub-look; tap cycles
+  or opens the sub list for the active preset.
+- Shutter stays perfectly centered — equal-width side slots, no layout shift
+  when preset names change.
+- SQLite records preset_id + preset_sub per shot.
+- Verified on device: ears render, picker opens clear of the shutter, recipes
+  apply at develop, layout stable.
+
+## 1.7.0 (2026-09-13) — Capture presets & sub-presets (PRO selector)
+
+- **Capture presets** flanking the shutter (per the user's reference UI): left ear
+  = preset selector, right ear = sub-preset selector. Six presets — Standard,
+  **Natural**, **Masculine**, **Night**, **Cinematic**, **Portrait** — each with
+  three sub-looks (Portrait: Nature Light / Studio Light / Contour Light).
+- **Recipes apply at develop time** through the grade pipeline: per-preset
+  exposure/contrast/shadow-crush-or-lift/highlight-protection/temperature/
+  saturation/skin-zone control + split-toning (teal shadows, warm highlights),
+  micro-contrast (half-res unsharp), fine sharpen (skin-gentled), rolloff,
+  grain and vignette.
+- Selection persists; shots record preset + sub in SQLite (`preset_id`,
+  `preset_sub` columns, guarded migration).
+- Skin discipline everywhere: orange-zone desaturation 0.85–0.95, sharpening
+  reduced 60% on detected skin tones, no smoothing/reshaping anywhere.
+- Verified on device: Masculine/teal sub visible, recipe switch changes the
+  developed output, persistence across restarts.
+
 ## 1.6.1 (2026-09-13) — Decluttered dashboard: unified ruler buttons
 
 - **Zoom pills removed.** The dashboard now has three clean buttons —
@@ -184,3 +214,38 @@ via Expo Go + adb-driven interaction tests. Chapter 10's EAS release build remai
 - EAS release build (APK/AAB) pending — `eas build -p android --profile preview`.
 - Thumbnail list access in Expo Go is limited; full gallery reads arrive with the
   dev build.
+
+## 2026-09-12 — Preset ear overlap fix (final, verified on device)
+
+- Preset + sub-preset selectors now render as **inline ear chips** in the
+  main row (left: preset name, right: sub name); tapping a chip opens its
+  picker docked to the top of the screen — the shutter is never covered.
+- Verified on Redmi K80 Pro: thumbnail / PORTRAIT / shutter / NATURE LI /
+  flip all fit with clear gaps, no overlap at any screen state.
+- `npx tsc --noEmit` clean.
+
+## 2026-09-12 — Preset selector: real root cause fixed (structural)
+
+Root cause: the picker was swapped INTO mainRow as a conditional child,
+replacing its ear chip. Every open/remove re-flowed the space-between row
+(shutter shifted) and the panel was absolutely positioned relative to the
+bottom row (top:132 → opened below/over the shutter). Position tweaks could
+never fix this.
+
+Fix (decoupled):
+- Both ear chips are now ALWAYS mounted in mainRow — the shutter never moves.
+- Pickers render as a separate top-docked overlay (insets.top + 64) with a
+  full-screen tap-outside backdrop, inserted at the rails container level.
+- Rails are held awake while a picker is open (holdUI includes earPicker).
+
+Verified on device: preset list (5) and sub list (3) both open at the top with
+active highlight; selecting Masculine → chips read MASCULINE / IRON (auto
+reset); selecting Steel → STEEL; shutter dead-center in every state.
+
+## 2026-09-12 — Picker anchored to its button (UX refinement)
+
+- Picker card now opens just ABOVE the selector button
+  (bottom: insets.bottom + 140 → 12dp clearance over the main row),
+  popover-style, instead of docking to the top of the screen.
+- Verified on device: card bottom sits directly over the MASCULINE ear,
+  active preset highlighted, shutter fully visible and untouched.

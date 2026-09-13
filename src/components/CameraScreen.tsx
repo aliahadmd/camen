@@ -5,7 +5,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   AppState,
   Animated,
+  Pressable,
   StyleSheet,
+  Text,
   View,
 } from 'react-native';
 import {
@@ -25,6 +27,7 @@ import {
 import { DEFAULT_SETTINGS, useSettings, type GridMode } from '../features/settings';
 import { frameRect, getFraming } from '../features/framings';
 import { getPreset } from '../features/filters';
+import { CAPTURE_PRESETS, getPreset as getCapturePreset, presetRecipe, presetVeilLayers } from '../features/presets';
 import { useCamera } from '../features/useCamera';
 import { Chip, IconButton } from './Chips';
 import { CountdownRing } from './CountdownRing';
@@ -61,6 +64,7 @@ export function CameraScreen() {
   const [showShots, setShowShots] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'ev'>('off');
+  const [earPicker, setEarPicker] = useState<null | 'preset' | 'sub'>(null);
 
   // preview bounds for the grid
   const [bounds, setBounds] = useState({ w: 0, h: 0 });
@@ -73,7 +77,7 @@ export function CameraScreen() {
   useEdgeLightBrightness(edgeLevel > 0);
 
   // idle fade for the control rails
-  const holdUI = cam.countdown.active || cam.phase !== 'ready';
+  const holdUI = cam.countdown.active || cam.phase !== 'ready' || earPicker !== null;
   const { railOpacity, bump } = useIdleFade(holdUI);
 
   // pinch zoom
@@ -198,6 +202,15 @@ export function CameraScreen() {
             }}
           >
             <Grid mode={settings.grid} width={frame.w} height={frame.h} />
+
+          {/* capture-preset preview veils — instant feedback for the tonal recipe */}
+          {presetVeilLayers(presetRecipe(settings.preset, settings.presetSub)).map((layer, i) => (
+            <View
+              key={`pv-${i}`}
+              pointerEvents="none"
+              style={[StyleSheet.absoluteFill, { backgroundColor: layer.color, opacity: layer.opacity }]}
+            />
+          ))}
           </View>
           <EdgeLight level={edgeLevel} />
 
@@ -363,6 +376,16 @@ export function CameraScreen() {
 
               <View style={styles.mainRow} pointerEvents="box-none">
                 <Thumbnail uri={cam.thumbUri} onPress={() => setShowShots(true)} />
+                <Pressable
+                  style={[styles.earChip, earPicker === 'preset' && styles.earChipActive]}
+                  onPress={() => setEarPicker(earPicker === 'preset' ? null : 'preset')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Capture preset"
+                >
+                  <Text style={styles.earChipText}>
+                    {(getCapturePreset(settings.preset).name || 'STD').toUpperCase().slice(0, 9)}
+                  </Text>
+                </Pressable>
                 <View style={styles.shutterWrap}>
                   {cam.countdown.active ? (
                     <View style={styles.countdownWrap} pointerEvents="none">
@@ -376,6 +399,16 @@ export function CameraScreen() {
                     danger={cam.saveError}
                   />
                 </View>
+                <Pressable
+                  style={[styles.earChip, earPicker === 'sub' && styles.earChipActive]}
+                  onPress={() => setEarPicker(earPicker === 'sub' ? null : 'sub')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Sub preset"
+                >
+                  <Text style={styles.earChipText}>
+                    {(getCapturePreset(settings.preset).subs.find((s) => s.id === settings.presetSub)?.name ?? 'LOOK').toUpperCase().slice(0, 9)}
+                  </Text>
+                </Pressable>
                 <IconButton
                   icon="camera-reverse"
                   active={settings.facing === 'front'}
@@ -385,6 +418,45 @@ export function CameraScreen() {
                 />
               </View>
             </View>
+
+            {/* preset pickers — anchored just above the selector button,
+                fully decoupled from the bottom row so the shutter never moves */}
+            {earPicker !== null ? (
+              <>
+                <Pressable
+                  style={styles.backdrop}
+                  onPress={() => setEarPicker(null)}
+                  accessibilityLabel="Close preset picker"
+                />
+                <View style={[styles.earDock, { bottom: insets.bottom + 140 }]}>
+                  {earPicker === 'preset'
+                    ? CAPTURE_PRESETS.map((p) => (
+                        <Pressable
+                          key={p.id}
+                          style={[styles.earOption, settings.preset === p.id && styles.earOptionActive]}
+                          onPress={() => {
+                            patch({ preset: p.id, presetSub: p.subs[0].id });
+                            setEarPicker(null);
+                          }}
+                        >
+                          <Text style={styles.earOptionText}>{p.name}</Text>
+                        </Pressable>
+                      ))
+                    : getCapturePreset(settings.preset).subs.map((s) => (
+                        <Pressable
+                          key={s.id}
+                          style={[styles.earOption, settings.presetSub === s.id && styles.earOptionActive]}
+                          onPress={() => {
+                            patch({ presetSub: s.id });
+                            setEarPicker(null);
+                          }}
+                        >
+                          <Text style={styles.earOptionText}>{s.name}</Text>
+                        </Pressable>
+                      ))}
+                </View>
+              </>
+            ) : null}
           </Animated.View>
 
           {/* the ring lines every side, drawn above the rails */}
@@ -434,7 +506,8 @@ function useEdgeLightBrightness(active: boolean) {
   }, [active]);
 }
 
-/** Fades the control rails to a whisper after 4s of inactivity. */function useIdleFade(hold: boolean) {
+/** Fades the control rails to a whisper after 4s of inactivity. */
+function useIdleFade(hold: boolean) {
   const railOpacity = useRef(new Animated.Value(1)).current;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -526,5 +599,53 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
+  },
+  earDock: {
+    position: 'absolute',
+    left: spacing.l,
+    right: spacing.l,
+    maxHeight: 380,
+    borderRadius: 14,
+    backgroundColor: 'rgba(11,12,14,0.97)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    padding: 6,
+  },
+  earOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  earOptionActive: {
+    backgroundColor: colors.panel,
+  },
+  earOptionText: {
+    color: colors.bone,
+    fontSize: 12,
+  },
+  earChip: {
+    minWidth: 58,
+    height: 34,
+    borderRadius: 17,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(22,24,27,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  earChipActive: {
+    backgroundColor: colors.panel,
+  },
+  backdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  earChipText: {
+    color: colors.bone,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
 });

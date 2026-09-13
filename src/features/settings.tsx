@@ -43,6 +43,10 @@ export type Settings = {
   aeb: boolean;
   /** Simulated ISO. 0 = auto (no gain). */
   iso: number;
+  /** Capture preset id (standard / natural / masculine / night / cinematic / portrait). */
+  preset: string;
+  /** Sub-preset id within the capture preset. */
+  presetSub: string;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -63,6 +67,8 @@ export const DEFAULT_SETTINGS: Settings = {
   tone: 'ldr',
   aeb: false,
   iso: 0,
+  preset: 'standard',
+  presetSub: 'standard',
 };
 
 const STORAGE_KEY = 'camen.settings.v1';

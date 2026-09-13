@@ -27,17 +27,25 @@ function buildLuts(grade: PhotoGrade): LutSet {
 }
 
 /**
- * Single in-place pass over RGBA pixels: tone LUTs → luminance-masked
- * shadow/highlight shaping → B&W mixer or saturation (with skin-hue control) →
- * vignette. Written against a Uint8ClampedArray view so clamping is free.
+ * Single in-place pass over RGBA pixels: tone LUTs → luminance-masked shadow/highlight
+ * shaping → split-toning → B&W mixer or saturation (with skin control) →
+ * micro-contrast → fine sharpen → highlight rolloff → vignette → grain.
  */
-function applyGrade(
-  raw: Uint8Array,
+export function applyGrade(
+  data: Uint8Array,
   w: number,
   h: number,
   grade: PhotoGrade,
+  extras: {
+    microContrast?: number;
+    sharpen?: number;
+    splitShadow?: [number, number, number];
+    splitHighlight?: [number, number, number];
+    splitStrength?: number;
+    rolloff?: number;
+  } = {},
 ): void {
-  const px = new Uint8ClampedArray(raw.buffer, raw.byteOffset, raw.length);
+  const px = new Uint8ClampedArray(data.buffer, data.byteOffset, data.length);
   const lut = buildLuts(grade);
   const shadows = grade.shadows ?? 0;
   const highlights = grade.highlights ?? 0;
@@ -45,70 +53,198 @@ function applyGrade(
   const orange = grade.orangeSaturation ?? 1;
   const bw = grade.bwMix;
   const vig = grade.vignette ?? 0;
-  const needsSat = !bw && (sat !== 1 || orange !== 1);
+  const micro = extras.microContrast ?? 0;
+  const sharpen = extras.sharpen ?? 0;
+  const splitShadow = extras.splitShadow;
+  const splitHighlight = extras.splitHighlight;
+  const splitStrength = extras.splitStrength ?? 0;
+  const rolloff = extras.rolloff ?? 0;
   const needsTone = shadows !== 0 || highlights !== 0;
 
-  const rowF = new Float32Array(h);
-  const colF = new Float32Array(w);
-  if (vig > 0) {
-    for (let y = 0; y < h; y++) {
-      const d = y / h - 0.5;
-      rowF[y] = 1 - vig * 2 * d * d;
+  // Pass 1: tone LUT + record luminance (needed for micro/sharpen)
+  const lum = new Uint8Array(w * h);
+  for (let p = 0, i = 0; p < w * h; p++, i += 4) {
+    const r = lut.r[px[i]];
+    const g = lut.g[px[i + 1]];
+    const b = lut.b[px[i + 2]];
+    px[i] = r;
+    px[i + 1] = g;
+    px[i + 2] = b;
+    lum[p] = (r * 77 + g * 150 + b * 29) >> 8;
+  }
+
+  // Pass 2: micro-contrast — unsharp against a half-res blurred luminance
+  if (micro > 0) {
+    const w2 = Math.max(1, w >> 1);
+    const h2 = Math.max(1, h >> 1);
+    const small = new Uint8Array(w2 * h2);
+    for (let y = 0; y < h2; y++) {
+      const sy = Math.min(h - 1, y * 2);
+      for (let x = 0; x < w2; x++) {
+        const sx = Math.min(w - 1, x * 2);
+        small[y * w2 + x] = lum[sy * w + sx];
+      }
     }
-    for (let x = 0; x < w; x++) {
-      const d = x / w - 0.5;
-      colF[x] = 1 - vig * 2 * d * d;
+    const blurred = boxBlurU8(small, w2, h2, 6);
+    for (let y = 0; y < h; y++) {
+      const fy = Math.min(h2 - 1, y >> 1);
+      const y0 = Math.min(h2 - 1, fy);
+      const y1 = Math.min(h2 - 1, fy + 1);
+      const wy = (y & 1) * 0.5;
+      for (let x = 0; x < w; x++) {
+        const fx = Math.min(w2 - 1, x >> 1);
+        const x0 = Math.min(w2 - 1, fx);
+        const x1 = Math.min(w2 - 1, fx + 1);
+        const wx = (x & 1) * 0.5;
+        const top = blurred[y0 * w2 + x0] * (1 - wx) + blurred[y0 * w2 + x1] * wx;
+        const bot = blurred[y1 * w2 + x0] * (1 - wx) + blurred[y1 * w2 + x1] * wx;
+        const i4 = (y * w + x) * 4;
+        const detail = lum[y * w + x] - (top * (1 - wy) + bot * wy);
+        const amt = micro * 1.5;
+        px[i4] += detail * amt;
+        px[i4 + 1] += detail * amt;
+        px[i4 + 2] += detail * amt;
+      }
     }
   }
 
-  let i = 0;
-  for (let y = 0; y < h; y++) {
-    const rowVig = vig > 0 ? rowF[y] : 1;
-    for (let x = 0; x < w; x++, i += 4) {
-      let r = lut.r[px[i]];
-      let g = lut.g[px[i + 1]];
-      let b = lut.b[px[i + 2]];
+  // Pass 3: fine sharpen — small-radius unsharp, gentler on skin tones
+  if (sharpen > 0) {
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const i = (y * w + x) * 4;
+        const c = lum[y * w + x];
+        const avg =
+          (lum[(y - 1) * w + x - 1] + lum[(y - 1) * w + x] + lum[(y - 1) * w + x + 1] +
+           lum[y * w + x - 1] + lum[y * w + x + 1] +
+           lum[(y + 1) * w + x - 1] + lum[(y + 1) * w + x] + lum[(y + 1) * w + x + 1]) / 8;
+        const detail = c - avg;
+        const warmSkin = px[i] > px[i + 2] && px[i] > 90;
+        const d = detail * sharpen * (warmSkin ? 0.4 : 1);
+        px[i] += d;
+        px[i + 1] += d;
+        px[i + 2] += d;
+      }
+    }
+  }
 
-      if (needsTone || vig > 0) {
-        const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-        let f = rowVig * (vig > 0 ? colF[x] : 1);
-        if (needsTone) {
-          if (shadows !== 0) {
-            const mask = (1 - lum) * (1 - lum);
-            f *= 1 - shadows * 0.45 * mask;
-          }
-          if (highlights !== 0) {
-            const mask = lum * lum;
-            f *= 1 + highlights * 0.45 * mask;
-          }
-        }
+  // Pass 4: per-pixel color shaping — shadows/highlights masks, split-toning,
+  // saturation with skin-zone control, B&W mixer, rolloff, vignette, grain.
+  for (let p = 0, i = 0; p < w * h; p++, i += 4) {
+    let r = px[i] / 255;
+    let g = px[i + 1] / 255;
+    let b = px[i + 2] / 255;
+    let lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+    if (needsTone) {
+      if (shadows !== 0) {
+        const m = (1 - lum) * (1 - lum);
+        const f = 1 - shadows * 0.45 * m;
         r *= f;
         g *= f;
         b *= f;
       }
-
-      if (bw) {
-        const gray = bw[0] * r + bw[1] * g + bw[2] * b;
-        r = gray;
-        g = gray;
-        b = gray;
-      } else if (needsSat) {
-        const l = 0.299 * r + 0.587 * g + 0.114 * b;
-        let s = sat;
-        // skin-hue zone: r dominant, warm, not extreme — desaturate it only
-        if (orange !== 1 && r > g && g >= b - 12 && r - b > 24 && r > 60) {
-          s *= orange;
-        }
-        r = l + (r - l) * s;
-        g = l + (g - l) * s;
-        b = l + (b - l) * s;
+      if (highlights !== 0) {
+        const m = lum * lum;
+        const f = 1 - highlights * 0.45 * m;
+        r *= f;
+        g *= f;
+        b *= f;
       }
+    }
 
-      px[i] = r;
-      px[i + 1] = g;
-      px[i + 2] = b;
+    if (splitStrength > 0 && splitShadow) {
+      const sm = (1 - lum) * (1 - lum) * splitStrength;
+      r += (splitShadow[0] - r) * sm;
+      g += (splitShadow[1] - g) * sm;
+      b += (splitShadow[2] - b) * sm;
+    }
+    if (splitStrength > 0 && splitHighlight) {
+      const hm = lum * lum * splitStrength;
+      r += (splitHighlight[0] - r) * hm;
+      g += (splitHighlight[1] - g) * hm;
+      b += (splitHighlight[2] - b) * hm;
+    }
+
+    if (bw) {
+      const k = bw[0] * r + bw[1] * g + bw[2] * b;
+      r = k;
+      g = k;
+      b = k;
+    } else {
+      let s = sat;
+      if (orange !== 1 && r > g && g >= b - 0.05 && r - b > 0.1 && r > 0.25) {
+        s *= orange;
+      }
+      const l = 0.299 * r + 0.587 * g + 0.114 * b;
+      r = l + (r - l) * s;
+      g = l + (g - l) * s;
+      b = l + (b - l) * s;
+    }
+
+    if (rolloff > 0 && lum > 0.72) {
+      const f = 1 - rolloff * 0.4 * ((lum - 0.72) / 0.28);
+      r *= f;
+      g *= f;
+      b *= f;
+    }
+
+    if (vig > 0) {
+      const x = p % w;
+      const y = (p / w) | 0;
+      const dx = x / w - 0.5;
+      const dy = y / h - 0.5;
+      const f = 1 - vig * 2 * (dx * dx + dy * dy);
+      r *= f;
+      g *= f;
+      b *= f;
+    }
+
+    if (grade.grain) {
+      const n = (Math.sin((p % w) * 12.9898 + (p / w | 0) * 78.233 + (grade.grain * 100)) - 0.5) * grade.grain * 0.12;
+      r += n;
+      g += n;
+      b += n;
+    }
+
+    px[i] = r * 255;
+    px[i + 1] = g * 255;
+    px[i + 2] = b * 255;
+  }
+}
+
+/** Separable box blur (horizontal + vertical sliding-window passes). */
+function boxBlurU8(src: Uint8Array, w: number, h: number, radius: number): Uint8Array {
+  const tmp = new Uint8Array(src.length);
+  const out = new Uint8Array(src.length);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let x = -radius; x <= radius; x++) sum += src[row + Math.min(w - 1, Math.max(0, x))];
+    const cnt = radius * 2 + 1;
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = sum / cnt;
+      const addX = Math.min(w - 1, x + radius + 1);
+      const remX = Math.max(0, x - radius);
+      sum += src[row + addX] - src[row + remX];
     }
   }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    let cnt = 0;
+    for (let y = -radius; y <= radius; y++) {
+      const yy = Math.min(h - 1, Math.max(0, y));
+      sum += tmp[yy * w + x];
+      cnt++;
+    }
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = sum / cnt;
+      const addY = Math.min(h - 1, y + radius + 1);
+      const remY = Math.max(0, y - radius);
+      sum += tmp[addY * w + x] - tmp[remY * w + x];
+    }
+  }
+  return out;
 }
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -134,7 +270,7 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 function toBase64(bytes: Uint8Array): string {
-  const parts: string[] = [];
+  let out = '';
   const n = bytes.length;
   for (let i = 0; i < n; i += 3) {
     const b0 = bytes[i];
@@ -142,18 +278,15 @@ function toBase64(bytes: Uint8Array): string {
     const has2 = i + 2 < n;
     const b1 = has1 ? bytes[i + 1] : 0;
     const b2 = has2 ? bytes[i + 2] : 0;
-    parts.push(B64[b0 >> 2]);
-    parts.push(B64[((b0 & 3) << 4) | (b1 >> 4)]);
-    parts.push(has1 ? B64[((b1 & 15) << 2) | (b2 >> 6)] : '=');
-    parts.push(has2 ? B64[b2 & 63] : '=');
+    out += B64[b0 >> 2];
+    out += B64[((b0 & 3) << 4) | (b1 >> 4)];
+    out += has1 ? B64[((b1 & 15) << 2) | (b2 >> 6)] : '=';
+    out += has2 ? B64[b2 & 63] : '=';
   }
-  return parts.join('');
+  return out;
 }
 
-/**
- * Center-crops a captured JPEG to the framing aspect (native, fast). Runs
- * BEFORE grading so the grade processes only the kept pixels.
- */
+/** Center-crops a captured JPEG to the framing aspect (native, fast). */
 export async function cropToAspect(
   uri: string,
   width: number,
@@ -192,7 +325,7 @@ export async function cropToAspect(
   return { uri: out.uri, width: out.width, height: out.height };
 }
 
-/** Develop-time capture options from the dashboard (Chapter 15). */
+/** Develop-time capture options: EV/ISO/tone + capture-preset tonal recipe. */
 export type DevelopOptions = {
   /** Manual exposure compensation in EV (−2…+2). */
   ev?: number;
@@ -200,6 +333,30 @@ export type DevelopOptions = {
   iso?: number;
   /** Tone style: HDR lifts shadows and recovers highlights. */
   tone?: 'ldr' | 'hdr';
+  /** Split-toning: shadow + highlight tint colors (0…1 rgb) and strength. */
+  temperatureSplit?: {
+    shadow: [number, number, number];
+    highlight: [number, number, number];
+    strength: number;
+  };
+  /** Capture-preset tonal recipe (plan18). */
+  exposure?: number;
+  contrast?: number;
+  /** negative = lift/recover, positive = deepen */
+  shadows?: number;
+  /** positive = protect/recover highlights */
+  highlights?: number;
+  temperature?: number;
+  saturation?: number;
+  orangeSaturation?: number;
+  microContrast?: number;
+  sharpen?: number;
+  rolloff?: number;
+  vignette?: number;
+  grain?: number;
+  splitShadow?: [number, number, number];
+  splitHighlight?: [number, number, number];
+  splitStrength?: number;
 };
 
 /**
@@ -232,35 +389,32 @@ export async function developPhoto(
   });
   const raw = jpeg.decode(base64ToBytes(b64), { useTArray: true });
 
-  // 3. Grade in place, with EV / simulated-ISO / HDR tone folded into the grade.
+  // 3. Grade in place, with EV / simulated-ISO / HDR tone folded into the grade,
+  //    plus the capture-preset tonal recipe (exposure/contrast/shadows/split/…).
   const isoGain = options.iso && options.iso > 0 ? options.iso / 100 : 0;
   const evBoost = (isoGain > 0 ? Math.log2(isoGain) : 0) + (options.ev ?? 0);
-  const effective: PhotoGrade =
-    options.tone === 'hdr'
-      ? {
-          ...grade,
-          exposure: (grade.exposure ?? 0) + evBoost,
-          contrast: Math.min(grade.contrast ?? 0, 0.08),
-          shadows: -0.18,
-          highlights: 0.25,
-          saturation: Math.max(grade.saturation ?? 1, 1.02),
-        }
-      : { ...grade, exposure: (grade.exposure ?? 0) + evBoost };
-  applyGrade(raw.data, raw.width, raw.height, effective);
+  const effective: PhotoGrade = {
+    ...grade,
+    exposure: (grade.exposure ?? 0) + evBoost + (options.exposure ?? 0),
+    contrast: (grade.contrast ?? 0) + (options.contrast ?? 0),
+    shadows: (grade.shadows ?? 0) + (options.shadows ?? 0),
+    highlights: (grade.highlights ?? 0) + (options.highlights ?? 0),
+    temperature: (grade.temperature ?? 0) + (options.temperature ?? 0),
+    saturation: (grade.saturation ?? 1) * (options.saturation ?? 1),
+    orangeSaturation: (grade.orangeSaturation ?? 1) * (options.orangeSaturation ?? 1),
+    vignette: Math.min(0.6, (grade.vignette ?? 0) + (options.vignette ?? 0)),
+    grain: Math.min(1, (grade.grain ?? 0) + (options.grain ?? 0)),
+  };
+  applyGrade(raw.data, raw.width, raw.height, effective, {
+    microContrast: options.microContrast,
+    sharpen: options.sharpen,
+    rolloff: options.rolloff,
+    splitShadow: options.splitShadow ?? options.temperatureSplit?.shadow,
+    splitHighlight: options.splitHighlight ?? options.temperatureSplit?.highlight,
+    splitStrength: options.splitStrength ?? options.temperatureSplit?.strength,
+  });
 
-  // 4. Simulated ISO grain, proportional to sqrt(gain).
-  if (isoGain > 1) {
-    const amp = Math.min(30, Math.sqrt(isoGain) * 7);
-    for (let i = 0; i < raw.data.length; i += 4) {
-      const n = (Math.random() - 0.5) * amp;
-      // Uint8ClampedArray is not required here — clamp manually.
-      raw.data[i] = Math.max(0, Math.min(255, raw.data[i] + n));
-      raw.data[i + 1] = Math.max(0, Math.min(255, raw.data[i + 1] + n));
-      raw.data[i + 2] = Math.max(0, Math.min(255, raw.data[i + 2] + n));
-    }
-  }
-
-  // 5. Encode + write to cache.
+  // 4. Encode + write to cache.
   const out = jpeg.encode({ data: raw.data, width: raw.width, height: raw.height }, 90);
   const cacheDir = FileSystem.cacheDirectory;
   if (!cacheDir) throw new Error('no cache directory');

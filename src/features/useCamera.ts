@@ -16,6 +16,7 @@ import { clampRatio, type DeviceProfile } from './deviceProfile';
 import { getPreset, hasGrade } from './filters';
 import { cropToAspect, developPhoto } from './gradePhoto';
 import { getFraming } from './framings';
+import { presetRecipe } from './presets';
 import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
 import type { Settings } from './settings';
@@ -208,8 +209,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
 
       const preset = getPreset(settings.filterId);
+      const recipe = presetRecipe(settings.preset, settings.presetSub);
       const needsDevelop =
-        hasGrade(preset) || evOffset !== 0 || settings.iso > 0 || settings.tone === 'hdr';
+        hasGrade(preset) || evOffset !== 0 || settings.iso > 0 || settings.tone === 'hdr' ||
+        Object.keys(recipe).length > 0;
       if (needsDevelop) {
         setProcessing(true);
         try {
@@ -217,6 +220,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
             ev: evOffset,
             iso: settings.iso,
             tone: settings.tone,
+            ...recipe,
           });
           fileUri = dev.uri;
           w = dev.width;
@@ -292,6 +296,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         edge_light: settings.edgeLight,
         device: 'Redmi K80 Pro',
         framing: settings.framing,
+        preset_id: settings.preset,
+        preset_sub: settings.presetSub,
         ev: meta.ev,
         iso: settings.iso,
         tone: settings.tone,

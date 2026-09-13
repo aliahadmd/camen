@@ -30,6 +30,8 @@ export type PhotoGrade = {
   bwMix?: [number, number, number];
   /** Corner falloff 0…0.4. */
   vignette?: number;
+  /** Film grain strength 0…1. */
+  grain?: number;
 };
 
 export type FilterLayer = {
