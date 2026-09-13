@@ -466,6 +466,16 @@ export function CameraScreen() {
           <View style={[styles.toastWrap, { bottom: insets.bottom + 120 }]} pointerEvents="none">
             <FadeLabel tick={cam.toast?.id ?? 0} text={cam.toast?.text ?? ''} ms={1400} />
           </View>
+
+          {/* front flash — a real white screen for the instant of capture
+              (the front lens has no flash unit; expo-camera's 'screen' flash
+              mode is iOS-only, so the app lights the screen itself) */}
+          {cam.screenFlash ? (
+            <View
+              style={[StyleSheet.absoluteFill, { backgroundColor: '#FFFFFF' }]}
+              pointerEvents="none"
+            />
+          ) : null}
         </View>
       </GestureDetector>
 

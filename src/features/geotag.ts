@@ -3,8 +3,9 @@ import * as piexif from 'piexifjs';
 
 /**
  * Injects GPS coordinates into a JPEG's EXIF (best-effort, in place).
- * piexifjs is pure JS — works in Expo Go. The DB row keeps lat/lon as the
- * reliable record even if EXIF injection fails.
+ * piexifjs is pure JS — works in Expo Go. Existing EXIF (capture time, camera
+ * model, orientation) is loaded and preserved; only the GPS block is written.
+ * The DB row keeps lat/lon as the reliable record even if EXIF injection fails.
  */
 export async function injectGpsExif(
   jpegUri: string,
@@ -39,7 +40,22 @@ export async function injectGpsExif(
     [piexif.GPSIFD.GPSLongitude]: toDms(lon),
   };
 
-  const exifBytes = piexif.dump({ '0th': {}, GPS: gps });
+  // Merge into the photo's own EXIF instead of replacing it — the capture
+  // DateTime, Make/Model and Orientation must survive the geotag.
+  let ifds: Record<string, Record<number, unknown>>;
+  try {
+    const loaded = piexif.load(dataUrl);
+    ifds = {
+      '0th': { ...(loaded['0th'] ?? {}) },
+      Exif: { ...(loaded['Exif'] ?? {}) },
+      GPS: { ...(loaded['GPS'] ?? {}), ...gps },
+    };
+  } catch {
+    // Unreadable EXIF (or none) — fall back to writing GPS alone.
+    ifds = { '0th': {}, Exif: {}, GPS: gps };
+  }
+
+  const exifBytes = piexif.dump(ifds);
   const newDataUrl = piexif.insert(exifBytes, dataUrl);
   const outB64 = newDataUrl.replace(/^data:image\/jpeg;base64,/, '');
   await FileSystem.writeAsStringAsync(jpegUri, outB64, {

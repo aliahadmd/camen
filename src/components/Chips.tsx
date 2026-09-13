@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { colors, label as labelStyle, radius, spacing } from '../theme';
 
@@ -91,5 +91,3 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 });
-
-export { View as __View };

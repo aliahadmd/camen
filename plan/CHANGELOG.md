@@ -249,3 +249,51 @@ reset); selecting Steel → STEEL; shutter dead-center in every state.
   popover-style, instead of docking to the top of the screen.
 - Verified on device: card bottom sits directly over the MASCULINE ear,
   active preset highlighted, shutter fully visible and untouched.
+
+## 2026-09-12 — Full audit fix pass (v1.9.0)
+
+Critical:
+- C1 preset staleness: `settings.preset`/`presetSub` added to processCapture +
+  saveShot deps — preset changes now reach the saved photo immediately.
+- C2 AEB: all variants process BEFORE any archiving (archiving moved the
+  source out from under the remaining variants — AEB could never save ×3).
+- C3 filename collisions: millisecond suffix + existence walk in archiveShot.
+- C4 HDR tone implemented (shadows −0.30 / highlights +0.30 / rolloff +0.25).
+- C5 ISO honest: gain capped at +2 EV, proportional grain added (≤0.55),
+  ISO ≤100 is a true no-op; settings copy updated.
+
+High:
+- Timer outranks rapid fire; new shutter semantics: tap = processed single,
+  hold ≥260 ms = rapid raw burst.
+- Cache reclaimed after every capture (original + intermediates deleted).
+- Camera thumbnail uses thumb_path (was decoding the 12 MP original).
+- Geotag merges into existing EXIF (DateTime/Make/Orientation survive).
+- app.json: expo-location plugin added (dev-build permission), version 1.9.0.
+
+Medium:
+- Anti-shake waits BEFORE arming the screen flash (no 4 s white screen).
+- Real front flash: full-screen white overlay at capture (expo-camera's
+  'screen' mode is iOS-only).
+- Veil split-tone preview reads temperatureSplit (was splitShadow — dead).
+- Sharpen pass refreshes luminance after micro-contrast; grain seeded per
+  photo (no more identical pattern); webp ext derived from actual bytes.
+- Countdown fires through a ref (no stale capture closure).
+- EXIF orientation guard (6/8 uprighted before crop/develop).
+- Shot detail shows capture preset + sub (was filter only).
+- Burst raws logged honestly (filter none / preset standard / framing full).
+
+Cleanup:
+- Removed react-native-vision-camera + @shopify/react-native-skia (unused),
+  CURATED_PICTURE_SIZES, __View export, FileSystem import, dist/.
+- 9 console.logs → dlog (dev-only). ISO picker = pills. @types/react → devDeps.
+- package.json version synced to 1.9.0.
+
+Verified on device (fresh bundle): tap capture, MASCULINE IRON recorded and
+graded, hold-burst +3, timer countdown ring + shot, AEB ×3 (SHOTS 7→10),
+front flash path, no pipeline errors. cropToAspect now skips no-op crops.
+Watched: two transient ImageManipulator 'Context.renderAsync rejected'
+events during back-to-back develops — fallback kept the shots; not since.
+
+Workflow note: Expo Go can serve a stale dev bundle after Metro restarts —
+force-stop the app (or `pm clear host.exp.exponent`) before trusting UI
+verification.

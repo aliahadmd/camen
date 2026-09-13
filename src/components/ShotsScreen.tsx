@@ -1,5 +1,4 @@
 import { Ionicons } from '@expo/vector-icons';
-import * as FileSystem from 'expo-file-system/legacy';
 import { useMemo, useState } from 'react';
 import {
   FlatList,
@@ -14,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
 import { countShots, recentShots, type ShotRow } from '../data/db';
 import { getPreset } from '../features/filters';
+import { getPreset as getCapturePreset, presetSubName } from '../features/presets';
 
 /**
  * SHOTS — in-app preview of the capture log, straight from SQLite + the
@@ -27,6 +27,8 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
 
   if (viewing) {
     const preset = getPreset(viewing.filter_id);
+    const captureName = getCapturePreset(viewing.preset_id).name;
+    const subName = presetSubName(viewing.preset_id, viewing.preset_sub).split(' ')[0];
     const mb = viewing.size_bytes ? (viewing.size_bytes / (1024 * 1024)).toFixed(1) : null;
     const time = new Date(viewing.created_at).toLocaleTimeString([], {
       hour: '2-digit',
@@ -45,7 +47,8 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
         </Pressable>
         <View style={[styles.metaBar, { bottom: insets.bottom + spacing.xl }]} pointerEvents="none">
           <Text style={styles.metaText}>
-            {preset.name.toUpperCase()} · {viewing.facing.toUpperCase()} · {viewing.width}×
+            {preset.name.toUpperCase()} · {captureName.toUpperCase()}{' '}
+            {subName.toUpperCase()} · {viewing.facing.toUpperCase()} · {viewing.width}×
             {viewing.height}
             {mb ? ` · ${mb} MB` : ''} · {time}
           </Text>

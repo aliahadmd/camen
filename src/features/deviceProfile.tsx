@@ -80,16 +80,6 @@ export async function probeDeviceProfile(): Promise<DeviceProfile> {
 export const clampRatio = (p: DeviceProfile, r: number): number =>
   Math.min(p.zoomMaxRatio, Math.max(p.zoomMinRatio, r));
 
-/**
- * Curated picture-size stops, probed from this device's HAL on 2026-09-12
- * (back offers 30 sizes, front 20 — see plan/hardware-report.md). Validated
- * against the live list at runtime; unknown entries are dropped.
- */
-export const CURATED_PICTURE_SIZES: Record<'front' | 'back', string[]> = {
-  back: ['4096x3072', '3840x2160', '3280x2464', '3072x3072', '2560x1440', '1920x1080'],
-  front: ['2592x1944', '2560x1440', '1920x1080', '1280x720'],
-};
-
 /** Expo's `zoom` prop is normalized 0…1 across the device range — convert. */
 export const ratioToNormalized = (p: DeviceProfile, r: number): number => {
   const span = p.zoomMaxRatio - p.zoomMinRatio;

@@ -19,6 +19,7 @@ import { getFraming } from './framings';
 import { presetRecipe } from './presets';
 import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
+import { dlog } from '../log';
 import type { Settings } from './settings';
 
 export type Phase = 'ready' | 'capturing' | 'saving';
@@ -33,6 +34,8 @@ const BURST_MAX = 30;
 const STEADY_HOLD_MS = 600;
 const STEADY_TIMEOUT_MS = 4000;
 const STEADY_G_TOLERANCE = 0.05;
+/** Sustained-press threshold: shorter = processed single shot, longer = burst. */
+const HOLD_TO_BURST_MS = 260;
 
 type UseCameraArgs = {
   settings: Settings;
@@ -40,7 +43,15 @@ type UseCameraArgs = {
   profile: DeviceProfile;
 };
 
-type CapturedFrame = { uri: string; width: number; height: number };
+type CapturedFrame = {
+  uri: string;
+  width: number;
+  height: number;
+  /** EXIF orientation of the source file (jpeg-js ignores it — see processCapture). */
+  orientation?: number;
+  /** Cache files created while processing that the caller should delete after archiving. */
+  extras?: string[];
+};
 
 /**
  * The camera engine: capture state machine, flash/torch, EV, anti-shake,
@@ -64,6 +75,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   const tickRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const burstActiveRef = useRef(false);
+  const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const facing = settings.facing;
 
@@ -118,7 +130,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
   // ---- gallery / archive --------------------------------------------------
   const refreshThumbnail = useCallback(async () => {
-    setThumbUri(latestShot()?.path ?? null);
+    // The 256px thumb, never the full-size original — decoding a 12MP JPEG
+    // into a 40px view spikes memory on every shot.
+    const shot = latestShot();
+    setThumbUri(shot?.thumb_path || shot?.path || null);
   }, []);
 
   const archiveShot = useCallback(
@@ -128,9 +143,16 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       const dir = `${docDir}camen`;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
       const d = new Date();
-      const p = (n: number) => String(n).padStart(2, '0');
-      const name = `CAM_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
-      const dest = `${dir}/${name}`;
+      const p = (n: number, len = 2) => String(n).padStart(len, '0');
+      // Millisecond precision + collision walk: burst/AEB saves can land in
+      // the same second, and a duplicate name would silently overwrite a shot.
+      const base = `CAM_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${p(d.getMilliseconds(), 3)}`;
+      let dest = `${dir}/${base}.${ext}`;
+      let n = 1;
+      while ((await FileSystem.getInfoAsync(dest)).exists) {
+        dest = `${dir}/${base}-${n}.${ext}`;
+        n++;
+      }
       try {
         await FileSystem.moveAsync({ from: cacheUri, to: dest });
       } catch {
@@ -163,8 +185,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
     };
-  }, [refreshThumbnail]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- location -------------------------------------------------------------
   const fetchCoords = useCallback(async (): Promise<{ lat: number; lon: number } | null> => {
@@ -183,12 +207,37 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   }, [settings.location]);
 
   // ---- capture pipeline -----------------------------------------------------
-  /** Framing crop → filter grade → EV/ISO/tone develop → format conversion. */
+  /**
+   * Orientation upright → framing crop → filter grade + preset recipe develop →
+   * format conversion. Every cache file created along the way that is not the
+   * returned final is listed in `extras` so the caller can reclaim the cache
+   * after archiving (the final itself is moved into the archive).
+   */
   const processCapture = useCallback(
     async (photo: CapturedFrame, evOffset: number): Promise<CapturedFrame> => {
+      const created: string[] = [];
       let fileUri = photo.uri;
       let w = photo.width;
       let h = photo.height;
+
+      // jpeg-js ignores EXIF orientation — upright rotated captures first so
+      // crop math and the grade operate on the displayed geometry.
+      if (photo.orientation === 6 || photo.orientation === 8) {
+        try {
+          const rotated = await ImageManipulator.manipulateAsync(
+            fileUri,
+            [{ rotate: photo.orientation === 6 ? 90 : 270 }],
+            { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
+          );
+          created.push(rotated.uri);
+          fileUri = rotated.uri;
+          const t = w;
+          w = h;
+          h = t;
+        } catch (e) {
+          dlog('[camen] orientation rotate failed:', e);
+        }
+      }
 
       const framing = getFraming(settings.framing);
       if (framing.aspect && w > 0 && h > 0) {
@@ -200,18 +249,19 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
             framing.aspect,
             framing.maxLongEdge,
           );
+          created.push(cropped.uri);
           fileUri = cropped.uri;
           w = cropped.width;
           h = cropped.height;
         } catch (e) {
-          console.log('[camen] crop failed, keeping native aspect:', e);
+          dlog('[camen] crop failed, keeping native aspect:', e);
         }
       }
 
       const preset = getPreset(settings.filterId);
       const recipe = presetRecipe(settings.preset, settings.presetSub);
       const needsDevelop =
-        hasGrade(preset) || evOffset !== 0 || settings.iso > 0 || settings.tone === 'hdr' ||
+        hasGrade(preset) || evOffset !== 0 || settings.iso > 100 || settings.tone === 'hdr' ||
         Object.keys(recipe).length > 0;
       if (needsDevelop) {
         setProcessing(true);
@@ -222,12 +272,27 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
             tone: settings.tone,
             ...recipe,
           });
+          created.push(dev.uri);
           fileUri = dev.uri;
           w = dev.width;
           h = dev.height;
         } catch (e) {
-          console.log('[camen] develop failed, saving original:', e);
-          fileUri = photo.uri;
+          dlog('[camen] develop failed, saving ungraded copy:', e);
+          // Own a private copy: the original cache file must stay intact for
+          // AEB variants of the same capture.
+          const cacheDir = FileSystem.cacheDirectory;
+          if (cacheDir) {
+            try {
+              const fallback = `${cacheDir}camen_fallback_${Date.now()}.jpg`;
+              await FileSystem.copyAsync({ from: photo.uri, to: fallback });
+              created.push(fallback);
+              fileUri = fallback;
+              w = photo.width;
+              h = photo.height;
+            } catch {
+              fileUri = photo.uri; // last resort: archive the original itself
+            }
+          }
         } finally {
           setProcessing(false);
         }
@@ -239,15 +304,26 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
             compress: 0.9,
             format: ImageManipulator.SaveFormat.WEBP,
           });
+          created.push(converted.uri);
           fileUri = converted.uri;
         } catch (e) {
-          console.log('[camen] webp conversion failed:', e);
+          dlog('[camen] webp conversion failed:', e);
         }
       }
 
-      return { uri: fileUri, width: w, height: h };
+      return { uri: fileUri, width: w, height: h, extras: created.filter((u) => u !== fileUri) };
     },
-    [settings.framing, settings.filterId, settings.format, settings.iso, settings.tone],
+    [
+      settings.framing,
+      settings.filterId,
+      settings.format,
+      settings.iso,
+      settings.tone,
+      // preset + sub MUST be listed: without them a preset change keeps using
+      // the previous recipe until some other setting happens to change.
+      settings.preset,
+      settings.presetSub,
+    ],
   );
 
   /** Archive → EXIF GPS → thumb → gallery export → SQLite row. */
@@ -255,16 +331,18 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     async (
       shot: CapturedFrame,
       coords: { lat: number; lon: number } | null,
-      meta: { ev: number; aeb: boolean },
+      meta: { ev: number; aeb: boolean; raw?: boolean },
     ): Promise<void> => {
-      const ext = settings.format === 'webp' ? 'webp' : 'jpg';
+      // Trust the actual file bytes, not the setting — a failed webp
+      // conversion must never archive JPEG data under a .webp name.
+      const ext = shot.uri.split('.').pop()?.toLowerCase() === 'webp' ? 'webp' : 'jpg';
       const { path, size } = await archiveShot(shot.uri, ext);
       if (coords) {
-        console.log('[camen] geotag', coords.lat.toFixed(5), coords.lon.toFixed(5));
+        dlog('[camen] geotag', coords.lat.toFixed(5), coords.lon.toFixed(5));
         try {
           await injectGpsExif(path, coords.lat, coords.lon);
         } catch (e) {
-          console.log('[camen] gps exif failed:', e);
+          dlog('[camen] gps exif failed:', e);
         }
       }
       let thumbPath = '';
@@ -278,14 +356,16 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         const asset = await MediaLibrary.createAssetAsync(path);
         galleryUri = asset?.uri ?? null;
       } catch (e) {
-        console.log('[camen] gallery export failed:', e);
+        dlog('[camen] gallery export failed:', e);
       }
+      // `raw` marks speed-priority burst originals: no crop, no filter grade,
+      // no preset recipe touched them — the log must not claim otherwise.
       insertShot({
         created_at: Date.now(),
         path,
         thumb_path: thumbPath,
         gallery_uri: galleryUri,
-        filter_id: settings.filterId,
+        filter_id: meta.raw ? 'none' : settings.filterId,
         facing,
         width: shot.width,
         height: shot.height,
@@ -295,19 +375,19 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         timer_seconds: settings.timerSeconds,
         edge_light: settings.edgeLight,
         device: 'Redmi K80 Pro',
-        framing: settings.framing,
-        preset_id: settings.preset,
-        preset_sub: settings.presetSub,
+        framing: meta.raw ? 'full' : settings.framing,
+        preset_id: meta.raw ? 'standard' : settings.preset,
+        preset_sub: meta.raw ? 'standard' : settings.presetSub,
         ev: meta.ev,
-        iso: settings.iso,
-        tone: settings.tone,
+        iso: meta.raw ? 0 : settings.iso,
+        tone: meta.raw ? 'ldr' : settings.tone,
         aeb: meta.aeb ? 1 : 0,
         lat: coords?.lat ?? null,
         lon: coords?.lon ?? null,
       });
 
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      showToast('Saved');
+      if (!meta.aeb) showToast('Saved');
       setSaveError(false);
       void refreshThumbnail();
     },
@@ -320,8 +400,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       settings.filterId,
       settings.flashMode,
       settings.framing,
-      settings.format,
       settings.iso,
+      settings.preset,
+      settings.presetSub,
       settings.timerSeconds,
       settings.tone,
       showToast,
@@ -397,16 +478,17 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     setPhase('capturing');
     let useScreenFlash = false;
     try {
-      useScreenFlash = facing === 'front' && settings.flashMode !== 'off';
-      if (useScreenFlash) {
-        setScreenFlashArmed(true);
-        await new Promise((r) => setTimeout(r, 120)); // let the native prop land
-      }
-
-      // Anti-shake: hold for a steady moment before the shutter fires.
+      // Anti-shake FIRST — the screen flash must never blind the user for the
+      // whole steady-wait (up to 4s).
       if (settings.antiShake) {
         const wait = await waitForSteady();
         if (wait.canceled) return;
+      }
+
+      useScreenFlash = facing === 'front' && settings.flashMode !== 'off';
+      if (useScreenFlash) {
+        setScreenFlashArmed(true);
+        await new Promise((r) => setTimeout(r, 150)); // let the white overlay land
       }
 
       const photo = await cameraRef.current.takePictureAsync({
@@ -423,24 +505,45 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         uri: photo.uri,
         width: photo.width ?? 0,
         height: photo.height ?? 0,
+        orientation: (photo.exif as { Orientation?: number } | undefined)?.Orientation,
       };
 
-      await saveShot(await processCapture(frame, ev), coords, { ev, aeb: false });
-
-      // AEB: two extra tonal variants of the same capture (−0.7EV / +0.7EV)
+      // Process the main shot AND every AEB variant BEFORE archiving anything —
+      // archiving moves cache files, which would starve the remaining variants.
+      const results: { shot: CapturedFrame; meta: { ev: number; aeb: boolean } }[] = [];
+      results.push({ shot: await processCapture(frame, ev), meta: { ev, aeb: false } });
       if (settings.aeb) {
         for (const bracket of [-0.7, 0.7]) {
           try {
-            const variant = await processCapture(frame, ev + bracket);
-            await saveShot(variant, null, { ev: ev + bracket, aeb: true });
+            results.push({
+              shot: await processCapture(frame, ev + bracket),
+              meta: { ev: ev + bracket, aeb: true },
+            });
           } catch (e) {
-            console.log('[camen] aeb variant failed:', e);
+            dlog('[camen] aeb variant failed:', e);
           }
         }
-        showToast('AEB ×3 saved');
+      }
+
+      // Archive everything, then reclaim the cache (original + intermediates).
+      // Archived finals were moved away; deleteAsync is idempotent anyway.
+      const cleanup = [frame.uri, ...results.flatMap((r) => r.shot.extras ?? [])];
+      try {
+        for (const r of results) {
+          await saveShot(r.shot, r.meta.aeb ? null : coords, r.meta);
+        }
+        if (settings.aeb && results.length === 3) showToast('AEB ×3 saved');
+      } catch (e) {
+        dlog('[camen] save failed:', e);
+        setSaveError(true);
+        showToast('Save failed');
+      } finally {
+        for (const uri of cleanup) {
+          void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+        }
       }
     } catch (e) {
-      console.log('[camen] capture failed:', e);
+      dlog('[camen] capture failed:', e);
       showToast('Capture failed');
     } finally {
       if (useScreenFlash) setScreenFlashArmed(false);
@@ -461,7 +564,21 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     waitForSteady,
   ]);
 
+  // A save failure pulses the shutter's danger ring briefly, then clears.
+  useEffect(() => {
+    if (!saveError) return;
+    const t = setTimeout(() => setSaveError(false), 2500);
+    return () => clearTimeout(t);
+  }, [saveError]);
+
   // ---- countdown ------------------------------------------------------------
+  // Fire through a ref so the countdown always uses the CURRENT capture
+  // (EV/preset changes made while counting down must apply).
+  const captureRef = useRef(capture);
+  useEffect(() => {
+    captureRef.current = capture;
+  }, [capture]);
+
   const cancelCountdown = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -491,13 +608,13 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           intervalRef.current = null;
           KeepAwake.deactivateKeepAwake();
           setCountdown(IDLE_COUNTDOWN);
-          void capture();
+          void captureRef.current();
         } else {
           setCountdown({ active: true, total, remaining: remainingMs / 1000 });
         }
       }, 50);
     },
-    [capture],
+    [],
   );
 
   const switchFacing = useCallback(() => {
@@ -539,15 +656,17 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       setBurst({ active: false, count: 0 });
 
       // Full-resolution originals, saved after release — no crop/grade during
-      // bursts (speed priority, documented in plan/plan15.md).
+      // bursts (speed priority, documented in plan/plan15.md). `raw: true`
+      // keeps the SQLite log honest about what these files are.
       phaseRef.current = 'saving';
       setPhase('saving');
       const coords = await fetchCoords();
       for (const frame of collected) {
         try {
-          await saveShot(frame, coords, { ev: 0, aeb: false });
+          await saveShot(frame, coords, { ev: 0, aeb: false, raw: true });
         } catch (e) {
-          console.log('[camen] burst save failed:', e);
+          dlog('[camen] burst save failed:', e);
+          setSaveError(true);
         }
       }
       if (collected.length > 0) showToast(`Rapid ×${collected.length}`);
@@ -569,20 +688,45 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       return;
     }
     if (phaseRef.current !== 'ready') return;
-    if (settings.rapidFire) {
-      startBurst();
-      return;
-    }
+    // The timer always wins over rapid fire — otherwise TIMER could never
+    // fire while Rapid fire (default on) is enabled.
     if (settings.timerSeconds > 0) {
       startCountdown(settings.timerSeconds);
       return;
     }
+    if (settings.rapidFire) {
+      // A tap is a fully processed single shot; a sustained hold (≥260ms)
+      // arms the rapid raw burst.
+      if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = setTimeout(() => {
+        tapTimerRef.current = null;
+        startBurst();
+      }, HOLD_TO_BURST_MS);
+      return;
+    }
     void capture();
-  }, [cancelCountdown, cancelSteady, capture, countdown.active, settings.rapidFire, settings.timerSeconds, startBurst, startCountdown, steady.active]);
+  }, [
+    cancelCountdown,
+    cancelSteady,
+    capture,
+    countdown.active,
+    settings.rapidFire,
+    settings.timerSeconds,
+    startBurst,
+    startCountdown,
+    steady.active,
+  ]);
 
   const onShutterRelease = useCallback(() => {
+    if (tapTimerRef.current) {
+      // Released before the hold threshold → processed single shot.
+      clearTimeout(tapTimerRef.current);
+      tapTimerRef.current = null;
+      void capture();
+      return;
+    }
     burstActiveRef.current = false;
-  }, []);
+  }, [capture]);
 
   // ---- ring light ------------------------------------------------------------
   const ringMode: RingMode =
@@ -609,6 +753,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     toggleTorch,
     enableTorch,
     flashProp,
+    screenFlash: screenFlashArmed,
     zoomRatio,
     setZoomRatio,
     commitZoom,

@@ -43,6 +43,8 @@ export function applyGrade(
     splitHighlight?: [number, number, number];
     splitStrength?: number;
     rolloff?: number;
+    /** Varies the grain pattern per photo so it never repeats identically. */
+    seed?: number;
   } = {},
 ): void {
   const px = new Uint8ClampedArray(data.buffer, data.byteOffset, data.length);
@@ -59,6 +61,7 @@ export function applyGrade(
   const splitHighlight = extras.splitHighlight;
   const splitStrength = extras.splitStrength ?? 0;
   const rolloff = extras.rolloff ?? 0;
+  const grainSeed = extras.seed ?? 0;
   const needsTone = shadows !== 0 || highlights !== 0;
 
   // Pass 1: tone LUT + record luminance (needed for micro/sharpen)
@@ -104,6 +107,13 @@ export function applyGrade(
         px[i4] += detail * amt;
         px[i4 + 1] += detail * amt;
         px[i4 + 2] += detail * amt;
+      }
+    }
+    // Sharpen reads luminance — refresh it so it reflects the micro-contrast
+    // pass just applied instead of the pre-pass snapshot.
+    if (sharpen > 0) {
+      for (let p = 0, i = 0; p < w * h; p++, i += 4) {
+        lum[p] = (px[i] * 77 + px[i + 1] * 150 + px[i + 2] * 29) >> 8;
       }
     }
   }
@@ -201,7 +211,9 @@ export function applyGrade(
     }
 
     if (grade.grain) {
-      const n = (Math.sin((p % w) * 12.9898 + (p / w | 0) * 78.233 + (grade.grain * 100)) - 0.5) * grade.grain * 0.12;
+      const n =
+        (Math.sin((p % w) * 12.9898 + (p / w | 0) * 78.233 + grainSeed) - 0.5) *
+        grade.grain * 0.12;
       r += n;
       g += n;
       b += n;
@@ -291,7 +303,7 @@ export async function cropToAspect(
   uri: string,
   width: number,
   height: number,
-  aspect: number,
+  aspect: number | null,
   maxLongEdge?: number,
 ): Promise<{ uri: string; width: number; height: number }> {
   if (!aspect || width <= 0 || height <= 0) {
@@ -308,10 +320,17 @@ export async function cropToAspect(
     ch = Math.round(width / aspect);
     y = Math.round((height - ch) / 2);
   }
+  const needsResize = !!maxLongEdge && Math.max(cw, ch) > maxLongEdge;
+  // No-op guard: a full-frame "crop" without a resize would only re-encode
+  // the JPEG for nothing (and every extra manipulator call is a chance for
+  // the native render context to race under load).
+  if (cw === width && ch === height && !needsResize) {
+    return { uri, width, height };
+  }
   const actions: ImageManipulator.Action[] = [
     { crop: { originX: x, originY: y, width: cw, height: ch } },
   ];
-  if (maxLongEdge && Math.max(cw, ch) > maxLongEdge) {
+  if (needsResize) {
     actions.push(
       cw >= ch
         ? { resize: { width: maxLongEdge } }
@@ -391,27 +410,32 @@ export async function developPhoto(
 
   // 3. Grade in place, with EV / simulated-ISO / HDR tone folded into the grade,
   //    plus the capture-preset tonal recipe (exposure/contrast/shadows/split/…).
-  const isoGain = options.iso && options.iso > 0 ? options.iso / 100 : 0;
-  const evBoost = (isoGain > 0 ? Math.log2(isoGain) : 0) + (options.ev ?? 0);
+  //    Simulated ISO is a gain boost capped at +2 EV with proportional grain —
+  //    matching what the EV ruler allows, never a runaway exposure.
+  const isoStops = options.iso && options.iso > 100 ? Math.log2(options.iso / 100) : 0;
+  const evBoost = Math.min(2, isoStops) + (options.ev ?? 0);
+  const isoGrain = Math.min(0.55, Math.max(0, isoStops) * 0.17);
+  const hdr = options.tone === 'hdr';
   const effective: PhotoGrade = {
     ...grade,
     exposure: (grade.exposure ?? 0) + evBoost + (options.exposure ?? 0),
     contrast: (grade.contrast ?? 0) + (options.contrast ?? 0),
-    shadows: (grade.shadows ?? 0) + (options.shadows ?? 0),
-    highlights: (grade.highlights ?? 0) + (options.highlights ?? 0),
+    shadows: (grade.shadows ?? 0) + (options.shadows ?? 0) + (hdr ? -0.3 : 0),
+    highlights: (grade.highlights ?? 0) + (options.highlights ?? 0) + (hdr ? 0.3 : 0),
     temperature: (grade.temperature ?? 0) + (options.temperature ?? 0),
     saturation: (grade.saturation ?? 1) * (options.saturation ?? 1),
     orangeSaturation: (grade.orangeSaturation ?? 1) * (options.orangeSaturation ?? 1),
     vignette: Math.min(0.6, (grade.vignette ?? 0) + (options.vignette ?? 0)),
-    grain: Math.min(1, (grade.grain ?? 0) + (options.grain ?? 0)),
+    grain: Math.min(1, (grade.grain ?? 0) + (options.grain ?? 0) + isoGrain),
   };
   applyGrade(raw.data, raw.width, raw.height, effective, {
     microContrast: options.microContrast,
     sharpen: options.sharpen,
-    rolloff: options.rolloff,
+    rolloff: (options.rolloff ?? 0) + (hdr ? 0.25 : 0),
     splitShadow: options.splitShadow ?? options.temperatureSplit?.shadow,
     splitHighlight: options.splitHighlight ?? options.temperatureSplit?.highlight,
     splitStrength: options.splitStrength ?? options.temperatureSplit?.strength,
+    seed: Math.floor(Math.random() * 4096),
   });
 
   // 4. Encode + write to cache.

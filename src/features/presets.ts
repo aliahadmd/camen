@@ -241,13 +241,13 @@ export function presetVeilLayers(recipe: DevelopOptions): {
   if (s < 0.95) layers.push({ color: '#7A7D82', opacity: Math.min(0.3, (1 - s) * 1.4) });
   const sh = recipe.shadows ?? 0;
   if (sh > 0.1) layers.push({ color: '#0A0C0E', opacity: Math.min(0.14, sh * 0.3) });
-  const st = recipe.splitStrength ?? 0;
-  if (st > 0.2 && recipe.splitShadow) {
-    const [r, g, b] = recipe.splitShadow;
-    layers.push({
-      color: `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`,
-      opacity: Math.min(0.16, st * 0.22),
-    });
+  // Split-toning — the recipes store it under `temperatureSplit`.
+  const rgbOf = (c: [number, number, number]) =>
+    `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
+  const ts = recipe.temperatureSplit;
+  if (ts && ts.strength > 0.2) {
+    layers.push({ color: rgbOf(ts.shadow), opacity: Math.min(0.14, ts.strength * 0.22) });
+    layers.push({ color: rgbOf(ts.highlight), opacity: Math.min(0.1, ts.strength * 0.15) });
   }
   return layers;
 }

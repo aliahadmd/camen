@@ -109,7 +109,7 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
         <Text style={styles.section}>CAPTURE</Text>
         <ToggleRow
           title="Rapid fire"
-          note="Hold the shutter for a full-res burst"
+          note="Tap = processed shot · hold = full-res burst"
           value={settings.rapidFire}
           onToggle={() => patch({ rapidFire: !settings.rapidFire })}
         />
@@ -121,7 +121,7 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
         />
         <ToggleRow
           title="Shutter sound"
-          note="Hardware sound on capture"
+          note="iOS hardware sound · Android always plays the system sound"
           value={settings.shutterSound}
           onToggle={() => patch({ shutterSound: !settings.shutterSound })}
         />
@@ -196,31 +196,27 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
           value={settings.aeb}
           onToggle={() => patch({ aeb: !settings.aeb })}
         />
-        {[0, 100, 200, 400, 800, 1600, 3200].map((isoValue) => (
-          <Pressable
-            key={isoValue}
-            onPress={() => patch({ iso: isoValue })}
-            style={[styles.row, settings.iso === isoValue && styles.rowActive]}
-            accessibilityRole="button"
-            accessibilityLabel={`ISO ${isoValue === 0 ? 'auto' : isoValue}`}
-          >
-            <View style={styles.rowMain}>
-              <Text style={[styles.rowTitle, settings.iso === isoValue && styles.rowTitleActive]}>
-                ISO {isoValue === 0 ? 'Auto' : isoValue}
-              </Text>
-              <Text style={styles.rowNote}>
-                {isoValue === 0
-                  ? 'No gain · cleanest'
-                  : isoValue >= 800
-                    ? 'Simulated · visible grain'
-                    : 'Simulated · subtle grain'}
-              </Text>
-            </View>
-            {settings.iso === isoValue ? (
-              <Ionicons name="checkmark" size={18} color={colors.brass} />
-            ) : null}
-          </Pressable>
-        ))}
+        <View style={styles.isoWrap}>
+          {[0, 100, 200, 400, 800, 1600, 3200].map((isoValue) => {
+            const active = settings.iso === isoValue;
+            return (
+              <Pressable
+                key={isoValue}
+                onPress={() => patch({ iso: isoValue })}
+                style={[styles.isoPill, active && styles.isoPillActive]}
+                accessibilityRole="button"
+                accessibilityLabel={`ISO ${isoValue === 0 ? 'auto' : isoValue}`}
+              >
+                <Text style={[styles.isoPillText, active && styles.isoPillTextActive]}>
+                  {isoValue === 0 ? 'Auto' : String(isoValue)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.hint}>
+          Simulated gain — up to +2 EV lift with film grain. Auto is cleanest.
+        </Text>
 
         <Text style={styles.section}>CAMERA</Text>
         <Pressable
@@ -330,5 +326,32 @@ const styles = StyleSheet.create({  wrap: {
     textTransform: 'none',
     letterSpacing: 0.3,
     marginBottom: spacing.s,
+  },
+  isoWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.s,
+    marginVertical: spacing.s,
+  },
+  isoPill: {
+    height: 34,
+    paddingHorizontal: 14,
+    borderRadius: 17,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  isoPillActive: {
+    backgroundColor: colors.brass,
+    borderColor: colors.brass,
+  },
+  isoPillText: {
+    color: colors.bone,
+    fontSize: 12,
+    ...monoFont,
+  },
+  isoPillTextActive: {
+    color: colors.ink,
   },
 });
