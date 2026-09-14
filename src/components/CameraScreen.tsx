@@ -18,7 +18,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
-import { colors, spacing } from '../theme';
+import { colors, label as labelStyle, monoFont, spacing } from '../theme';
 import {
   clampRatio,
   ratioToNormalized,
@@ -77,8 +77,22 @@ export function CameraScreen() {
   useEdgeLightBrightness(edgeLevel > 0);
 
   // idle fade for the control rails
-  const holdUI = cam.countdown.active || cam.phase !== 'ready' || earPicker !== null;
+  const holdUI =
+    cam.countdown.active || cam.phase !== 'ready' || earPicker !== null || cam.recording;
   const { railOpacity, bump } = useIdleFade(holdUI);
+
+  // double-tap on the viewfinder flips the camera (single taps just wake rails)
+  const lastTapRef = useRef(0);
+  const onTouchStart = useCallback(() => {
+    bump();
+    const now = Date.now();
+    if (now - lastTapRef.current < 280) {
+      lastTapRef.current = 0;
+      if (!cam.recording) cam.switchFacing();
+    } else {
+      lastTapRef.current = now;
+    }
+  }, [bump, cam]);
 
   // pinch zoom
   const zoomRef = useRef(cam.zoomRatio);
@@ -144,7 +158,7 @@ export function CameraScreen() {
       <GestureDetector gesture={pinch}>
         <View
           style={styles.fillInk}
-          onTouchStart={bump}
+          onTouchStart={onTouchStart}
           onLayout={(e) =>
             setBounds({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })
           }
@@ -167,7 +181,8 @@ export function CameraScreen() {
               zoom={ratioToNormalized(profile, cam.zoomRatio)}
               enableTorch={cam.enableTorch}
               mirror={settings.facing === 'front' && settings.mirrorFront}
-              mode="picture"
+              mode={settings.mode === 'video' ? 'video' : 'picture'}
+              videoQuality="1080p"
             />
           </View>
 
@@ -282,6 +297,43 @@ export function CameraScreen() {
             >
               <FadeLabel tick={settings.filterId} text={activePreset.name} style={styles.filterName} />
 
+              {/* PHOTO | VIDEO mode switch */}
+              <View style={styles.modeSwitch} pointerEvents="box-none">
+                <Pressable
+                  onPress={() => {
+                    if (!cam.recording && settings.mode !== 'photo') patch({ mode: 'photo' });
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Photo mode"
+                >
+                  <Text
+                    style={[
+                      styles.modeSwitchText,
+                      settings.mode === 'photo' && styles.modeSwitchTextActive,
+                    ]}
+                  >
+                    PHOTO
+                  </Text>
+                </Pressable>
+                <View style={styles.modeSwitchDivider} />
+                <Pressable
+                  onPress={() => {
+                    if (!cam.recording && settings.mode !== 'video') patch({ mode: 'video' });
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Video mode"
+                >
+                  <Text
+                    style={[
+                      styles.modeSwitchText,
+                      settings.mode === 'video' && styles.modeSwitchTextActive,
+                    ]}
+                  >
+                    VIDEO
+                  </Text>
+                </Pressable>
+              </View>
+
               {rulerMode === 'timer' ? (
                 <Ruler
                   min={0}
@@ -369,10 +421,22 @@ export function CameraScreen() {
                 />
               </View>
 
-              <FilterCarousel
-                selectedId={settings.filterId}
-                onSelect={(id) => patch({ filterId: id })}
-              />
+              {settings.mode === 'photo' ? (
+                <FilterCarousel
+                  selectedId={settings.filterId}
+                  onSelect={(id) => patch({ filterId: id })}
+                />
+              ) : null}
+
+              {cam.recording ? (
+                <View style={styles.recBadge} pointerEvents="none">
+                  <View style={styles.recDot} />
+                  <Text style={styles.recText}>
+                    REC {String(Math.floor(cam.recordSeconds / 60)).padStart(2, '0')}:
+                    {String(cam.recordSeconds % 60).padStart(2, '0')}
+                  </Text>
+                </View>
+              ) : null}
 
               <View style={styles.mainRow} pointerEvents="box-none">
                 <Thumbnail uri={cam.thumbUri} onPress={() => setShowShots(true)} />
@@ -584,6 +648,49 @@ const styles = StyleSheet.create({
     gap: spacing.s,
   },
   filterName: { alignSelf: 'center' },
+  modeSwitch: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    alignItems: 'center',
+    gap: spacing.m,
+  },
+  modeSwitchText: {
+    ...labelStyle,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 3,
+  },
+  modeSwitchTextActive: {
+    color: colors.brass,
+  },
+  modeSwitchDivider: {
+    width: StyleSheet.hairlineWidth,
+    height: 12,
+    backgroundColor: colors.hairline,
+  },
+  recBadge: {
+    flexDirection: 'row',
+    alignSelf: 'center',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: 'rgba(11,12,14,0.72)',
+  },
+  recDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.danger,
+  },
+  recText: {
+    ...labelStyle,
+    color: colors.bone,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    ...monoFont,
+  },
   mainRow: {
     flexDirection: 'row',
     alignItems: 'center',

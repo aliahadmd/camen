@@ -7,6 +7,31 @@ import type { PhotoGrade } from './filters';
 /** Cap the developed image's long edge — keeps JS processing in the 2–4s range. */
 const MAX_DIM = 2560;
 
+// ImageManipulator's native render context rejects concurrent calls ("Call to
+// function 'Context.renderAsync' has been rejected") when several run back to
+// back — AEB bursts + thumbnails hit exactly that. All manipulator work is
+// serialized through this chain, with one delayed retry as a belt-and-braces.
+let manipChain: Promise<unknown> = Promise.resolve();
+
+function isManipRace(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e ?? '');
+  return msg.includes('renderAsync') || msg.includes('Context.');
+}
+
+export function queuedManipulate<T>(job: () => Promise<T>): Promise<T> {
+  const run = manipChain.then(job, job);
+  manipChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run.catch(async (e: unknown) => {
+    if (!isManipRace(e)) throw e;
+    await new Promise((r) => setTimeout(r, 180));
+    // Retry inside the chain so it stays serialized.
+    return queuedManipulate(job);
+  });
+}
+
 type LutSet = { r: Uint8Array; g: Uint8Array; b: Uint8Array };
 
 /** Per-channel tone curve: white balance → exposure → contrast. */
@@ -337,11 +362,12 @@ export async function cropToAspect(
         : { resize: { height: maxLongEdge } },
     );
   }
-  const out = await ImageManipulator.manipulateAsync(uri, actions, {
-    compress: 0.95,
-    format: ImageManipulator.SaveFormat.JPEG,
-  });
-  return { uri: out.uri, width: out.width, height: out.height };
+  return queuedManipulate(() =>
+    ImageManipulator.manipulateAsync(uri, actions, {
+      compress: 0.95,
+      format: ImageManipulator.SaveFormat.JPEG,
+    }),
+  ).then((out) => ({ uri: out.uri, width: out.width, height: out.height }));
 }
 
 /** Develop-time capture options: EV/ISO/tone + capture-preset tonal recipe. */
@@ -394,10 +420,12 @@ export async function developPhoto(
   if (Math.max(srcWidth, srcHeight) > MAX_DIM) {
     const action =
       srcWidth >= srcHeight ? { resize: { width: MAX_DIM } } : { resize: { height: MAX_DIM } };
-    const resized = await ImageManipulator.manipulateAsync(sourceUri, [action], {
-      compress: 0.95,
-      format: ImageManipulator.SaveFormat.JPEG,
-    });
+    const resized = await queuedManipulate(() =>
+      ImageManipulator.manipulateAsync(sourceUri, [action], {
+        compress: 0.95,
+        format: ImageManipulator.SaveFormat.JPEG,
+      }),
+    );
     uri = resized.uri;
   }
 

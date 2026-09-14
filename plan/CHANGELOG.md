@@ -306,3 +306,30 @@ verification.
   (JS pipeline retained; VisionCamera/Skia removed in audit), ch8 v2 noted.
 - README with sideload + build instructions.
 - Locally signed release APK (keystore/camen-release.jks, git-ignored).
+
+## 2026-09-14 — v1.10.0 — video recording, SHOTS actions, debug-error fix
+
+Debug error investigated & fixed:
+- Dev-mode logcat hunt surfaced the real failure behind video capture:
+  `ExpoCameraView.record → ERR_MISSING_PERMISSIONS: RECORD_AUDIO`. Fixed by
+  requesting microphone permission before recordAsync (get → request →
+  friendly toast if denied) and adding RECORD_AUDIO + NSMicrophoneUsage
+  Description to the manifests.
+- The intermittent `Context.renderAsync rejected` (ImageManipulator race, the
+  only other error class in the logs) is now structurally fixed: ALL
+  manipulator work runs through a serialized queue with one delayed retry
+  (queuedManipulate in gradePhoto.ts); thumbnails included.
+
+New features:
+- VIDEO MODE — PHOTO | VIDEO switch above the chips; shutter toggles recording
+  (REC badge with running timer, ring at fire brightness); max 10 min/clip;
+  videos archive as .mp4, export to gallery, log media_type + duration_ms
+  (DB migration v1.10), and get real frame thumbnails via expo-video-thumbnails.
+  Filter carousel hides in video mode (veils don't apply to ungraded video —
+  honest UI).
+- SHOTS browser — ALL / PHOTOS / VIDEOS tabs; video detail plays inline
+  (expo-video, looping, native controls + fullscreen); Share (system sheet)
+  and Delete (removes archive file + thumb + DB row, confirm dialog) actions
+  on every shot; GPS line under the metadata when geotagged.
+- Double-tap the viewfinder flips the camera (blocked while recording).
+- Settings DEVICE section now shows archive stats (shots + total MB).

@@ -30,6 +30,8 @@ export type ShotRow = {
   lon: number | null;
   preset_id: string;
   preset_sub: string;
+  media_type: 'photo' | 'video';
+  duration_ms: number | null;
 };
 
 export type NewShot = Omit<ShotRow, 'id'>;
@@ -82,13 +84,25 @@ for (const col of [
   }
 }
 
+// v1.10: video support (guarded — idempotent across upgrades)
+for (const col of ["media_type TEXT NOT NULL DEFAULT 'photo'", 'duration_ms INTEGER']) {
+  try {
+    db.execSync(`ALTER TABLE shots ADD COLUMN ${col}`);
+  } catch {
+    // column already exists
+  }
+}
+
+const SHOT_COLUMNS = `created_at, path, thumb_path, gallery_uri, filter_id, facing,
+       width, height, size_bytes, flash_mode, zoom_ratio, timer_seconds,
+       edge_light, device, framing, ev, iso, tone, aeb, lat, lon, preset_id,
+       preset_sub, media_type, duration_ms`;
+
 export function insertShot(s: NewShot): number {
   const res = db.runSync(
     `INSERT INTO shots
-       (created_at, path, thumb_path, gallery_uri, filter_id, facing,
-        width, height, size_bytes, flash_mode, zoom_ratio, timer_seconds,
-        edge_light, device, framing, ev, iso, tone, aeb, lat, lon, preset_id, preset_sub)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (${SHOT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       s.created_at,
       s.path,
@@ -113,6 +127,8 @@ export function insertShot(s: NewShot): number {
       s.lon,
       s.preset_id,
       s.preset_sub,
+      s.media_type,
+      s.duration_ms,
     ],
   );
   return res.lastInsertRowId;
@@ -125,11 +141,29 @@ export function latestShot(): ShotRow | null {
   );
 }
 
-export function recentShots(limit = 200): ShotRow[] {
+export function recentShots(limit = 200, mediaType?: 'photo' | 'video'): ShotRow[] {
+  if (mediaType) {
+    return db.getAllSync<ShotRow>(
+      'SELECT * FROM shots WHERE media_type = ? ORDER BY id DESC LIMIT ?',
+      [mediaType, limit],
+    );
+  }
   return db.getAllSync<ShotRow>(
     'SELECT * FROM shots ORDER BY id DESC LIMIT ?',
     [limit],
   );
+}
+
+export function deleteShot(id: number): void {
+  db.runSync('DELETE FROM shots WHERE id = ?', [id]);
+}
+
+/** Total shots and total archive bytes — for the settings DEVICE section. */
+export function archiveStats(): { count: number; bytes: number } {
+  const row = db.getFirstSync<{ c: number; b: number | null }>(
+    'SELECT COUNT(*) AS c, SUM(size_bytes) AS b FROM shots',
+  );
+  return { count: row?.c ?? 0, bytes: row?.b ?? 0 };
 }
 
 export function countShots(): number {

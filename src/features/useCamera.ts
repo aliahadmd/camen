@@ -1,4 +1,4 @@
-import { CameraView, type FlashMode } from 'expo-camera';
+import { Camera, CameraView, type FlashMode } from 'expo-camera';
 import * as Brightness from 'expo-brightness';
 import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -10,6 +10,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 // the main export (ExpoMediaLibraryNext) is not bundled there yet. When moving to
 // a development build, switch this back to 'expo-media-library'.
 import * as FileSystem from 'expo-file-system/legacy';
+import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { clampRatio, type DeviceProfile } from './deviceProfile';
@@ -19,10 +20,11 @@ import { getFraming } from './framings';
 import { presetRecipe } from './presets';
 import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
+import { queuedManipulate } from './gradePhoto';
 import { dlog } from '../log';
 import type { Settings } from './settings';
 
-export type Phase = 'ready' | 'capturing' | 'saving';
+export type Phase = 'ready' | 'capturing' | 'saving' | 'recording';
 export type RingMode = 'idle' | 'fill' | 'breath' | 'firing';
 
 export type Countdown = { active: boolean; total: number; remaining: number };
@@ -69,6 +71,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   const [burst, setBurst] = useState<Burst>({ active: false, count: 0 });
   const [steady, setSteady] = useState<Steady>({ active: false, ok: false });
   const [ev, setEvState] = useState(0);
+  const [recording, setRecording] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
   const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
   const [screenFlashArmed, setScreenFlashArmed] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,6 +80,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const burstActiveRef = useRef(false);
   const tapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recordStartRef = useRef(0);
 
   const facing = settings.facing;
 
@@ -169,10 +174,22 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
     const name = src.split('/').pop() ?? `t${Date.now()}.jpg`;
     const dest = `${dir}/${name}`;
-    const thumb = await ImageManipulator.manipulateAsync(
-      src,
-      [{ resize: { width: 256 } }],
-      { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG },
+    // Videos can't go through ImageManipulator — grab a frame instead.
+    if (src.endsWith('.mp4')) {
+      const { uri: frame } = await VideoThumbnails.getThumbnailAsync(src, {
+        time: 500,
+        quality: 0.8,
+      });
+      await FileSystem.moveAsync({ from: frame, to: dest }).catch(async () => {
+        await FileSystem.copyAsync({ from: frame, to: dest });
+      });
+      return dest;
+    }
+    const thumb = await queuedManipulate(() =>
+      ImageManipulator.manipulateAsync(src, [{ resize: { width: 256 } }], {
+        compress: 0.8,
+        format: ImageManipulator.SaveFormat.JPEG,
+      }),
     );
     await FileSystem.moveAsync({ from: thumb.uri, to: dest }).catch(async () => {
       await FileSystem.copyAsync({ from: thumb.uri, to: dest });
@@ -332,6 +349,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       shot: CapturedFrame,
       coords: { lat: number; lon: number } | null,
       meta: { ev: number; aeb: boolean; raw?: boolean },
+      media: { mediaType: 'photo' | 'video'; durationMs?: number } = { mediaType: 'photo' },
     ): Promise<void> => {
       // Trust the actual file bytes, not the setting — a failed webp
       // conversion must never archive JPEG data under a .webp name.
@@ -384,6 +402,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         aeb: meta.aeb ? 1 : 0,
         lat: coords?.lat ?? null,
         lon: coords?.lon ?? null,
+        media_type: media.mediaType,
+        duration_ms: media.durationMs ?? null,
       });
 
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -618,6 +638,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   );
 
   const switchFacing = useCallback(() => {
+    // Camera switch mid-recording would orphan the record promise — block it.
+    if (phaseRef.current === 'recording') return;
     const next = facing === 'back' ? 'front' : 'back';
     if (next === 'front' ? !profile.hasFront : !profile.hasBack) return;
     if (intervalRef.current) cancelCountdown();
@@ -675,8 +697,108 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     })();
   }, [fetchCoords, saveShot, settings.shutterSound, showToast]);
 
+  // ---- video recording -------------------------------------------------------
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopRecordTimer = useCallback(() => {
+    if (recordTimerRef.current) {
+      clearInterval(recordTimerRef.current);
+      recordTimerRef.current = null;
+    }
+    setRecordSeconds(0);
+  }, []);
+
+  /**
+   * Starts recording. The promise chain resolves after `stopRecording()` —
+   * the camera stays in `recording` phase until the file lands in the archive.
+   * Videos record ungraded (sensor output); grading is a photo develop concept.
+   * Recording requires the microphone permission even for muted capture —
+   * the native record call refuses without it.
+   */
+  const startRecording = useCallback(() => {
+    if (phaseRef.current !== 'ready' || !cameraRef.current) return;
+    phaseRef.current = 'recording';
+    setPhase('recording');
+    setRecording(true);
+    recordStartRef.current = Date.now();
+    setRecordSeconds(0);
+    recordTimerRef.current = setInterval(() => {
+      setRecordSeconds(Math.floor((Date.now() - recordStartRef.current) / 1000));
+    }, 500);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    (async () => {
+      try {
+        const mic = await Camera.getMicrophonePermissionsAsync();
+        if (!mic.granted) {
+          const req = await Camera.requestMicrophonePermissionsAsync();
+          if (!req.granted) {
+            showToast('Mic permission needed for video');
+            setRecording(false);
+            stopRecordTimer();
+            phaseRef.current = 'ready';
+            setPhase('ready');
+            return;
+          }
+        }
+      } catch {
+        // permission check unavailable — let the native call decide
+      }
+      let vid: Awaited<ReturnType<NonNullable<typeof cameraRef.current>['recordAsync']>> | null =
+        null;
+      try {
+        vid = await cameraRef.current!.recordAsync({ maxDuration: 60 * 10 });
+      } catch (e) {
+        dlog('[camen] record failed:', e);
+      }
+      stopRecordTimer();
+      setRecording(false);
+      if (!vid?.uri) {
+        showToast('Record failed');
+        setSaveError(true);
+        phaseRef.current = 'ready';
+        setPhase('ready');
+        return;
+      }
+      phaseRef.current = 'saving';
+      setPhase('saving');
+      const durationMs = Date.now() - recordStartRef.current;
+      const coords = await fetchCoords();
+      try {
+        await saveShot(
+          { uri: vid.uri, width: 0, height: 0 },
+          coords,
+          { ev: 0, aeb: false, raw: true },
+          { mediaType: 'video', durationMs },
+        );
+      } catch (e) {
+        dlog('[camen] video save failed:', e);
+        setSaveError(true);
+        showToast('Save failed');
+      } finally {
+        phaseRef.current = 'ready';
+        setPhase('ready');
+      }
+    })();
+  }, [fetchCoords, saveShot, showToast, stopRecordTimer]);
+
+  const stopRecording = useCallback(() => {
+    cameraRef.current?.stopRecording();
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  }, []);
+
   // ---- shutter ------------------------------------------------------------
   const onShutter = useCallback(() => {
+    // Video mode: the shutter toggles recording — timer/rapid/anti-shake are
+    // photo-only concepts.
+    if (settings.mode === 'video') {
+      if (phaseRef.current === 'recording') {
+        stopRecording();
+        return;
+      }
+      if (phaseRef.current !== 'ready') return;
+      startRecording();
+      return;
+    }
     if (steady.active) {
       cancelSteady();
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
@@ -710,14 +832,18 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     cancelSteady,
     capture,
     countdown.active,
+    settings.mode,
     settings.rapidFire,
     settings.timerSeconds,
     startBurst,
     startCountdown,
+    startRecording,
     steady.active,
+    stopRecording,
   ]);
 
   const onShutterRelease = useCallback(() => {
+    if (settings.mode === 'video') return;
     if (tapTimerRef.current) {
       // Released before the hold threshold → processed single shot.
       clearTimeout(tapTimerRef.current);
@@ -726,15 +852,17 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       return;
     }
     burstActiveRef.current = false;
-  }, [capture]);
+  }, [capture, settings.mode]);
 
   // ---- ring light ------------------------------------------------------------
   const ringMode: RingMode =
-    phase === 'capturing' || phase === 'saving'
+    phase === 'recording'
       ? 'firing'
-      : countdown.active
-        ? 'breath'
-        : 'idle';
+      : phase === 'capturing' || phase === 'saving'
+        ? 'firing'
+        : countdown.active
+          ? 'breath'
+          : 'idle';
   const ringIntense = countdown.active && countdown.remaining <= 1;
 
   const shutterBusy = phase !== 'ready';
@@ -767,5 +895,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     setEv,
     burst,
     steady,
+    recording,
+    recordSeconds,
+    startRecording,
+    stopRecording,
   };
 }

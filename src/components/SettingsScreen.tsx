@@ -1,9 +1,11 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useMemo } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
 import { cropDims, FRAMINGS } from '../features/framings';
+import { archiveStats } from '../data/db';
 import type { ShotRow } from '../data/db';
 import { useSettings } from '../features/settings';
 import { useDeviceProfile } from '../features/deviceProfile';
@@ -48,11 +50,13 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
   const { settings, patch } = useSettings();
   const profile = useDeviceProfile();
   const insets = useSafeAreaInsets();
+  const stats = useMemo(() => archiveStats(), []);
 
   if (!settings) return null;
 
   const facing = settings.facing === 'front' ? 'front' : 'back';
   const [maxW, maxH] = profile.maxDims[facing];
+  const statsMb = (stats.bytes / (1024 * 1024)).toFixed(0);
 
   return (
     <View style={styles.wrap}>
@@ -243,6 +247,14 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
             <Text style={styles.rowNote}>
               {profile.maxDims[facing][0]}×{profile.maxDims[facing][1]} ·{' '}
               {settings.facing === 'front' ? 'Screen flash' : 'LED + torch'}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.row}>
+          <View style={styles.rowMain}>
+            <Text style={styles.rowTitle}>Archive</Text>
+            <Text style={styles.rowNote}>
+              {stats.count} shot{stats.count === 1 ? '' : 's'} · {statsMb} MB in Camen's folder
             </Text>
           </View>
         </View>

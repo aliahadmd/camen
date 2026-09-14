@@ -11,6 +11,9 @@ zoom stops, flash hardware, and sensor limits are probed and hardcoded to this p
 
 ## Features
 
+- **Photo + Video** — flip between modes with one tap; shutter toggles
+  recording (REC timer, up to 10 min/clip), videos land in the same archive
+  and log
 - **Capture presets** — Standard, Natural, Masculine (Iron/Steel/Forge), Night
   (City/Neon/Moon), Cinematic (Teal/Indie/Noir), Portrait — baked at develop time
   (split-toning, micro-contrast, film grain, vignette, highlight rolloff)
@@ -24,8 +27,9 @@ zoom stops, flash hardware, and sensor limits are probed and hardcoded to this p
 - **Edge Light** — screen-border fill light for selfies (the front lens has no
   flash unit) + real white screen flash at capture
 - **Shot log** — every capture indexed in SQLite (filter, preset, EV, ISO, GPS,
-  framing, zoom…) with an in-app SHOTS browser; the app-owned archive folder is
-  the source of truth
+  framing, zoom…) with an in-app SHOTS browser: ALL/PHOTOS/VIDEOS tabs, inline
+  video playback, share and delete; the app-owned archive folder is the source
+  of truth
 - **Geotagging** — optional GPS EXIF injection that preserves the original EXIF
 
 ## Install (no Play Store)

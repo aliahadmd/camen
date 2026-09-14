@@ -16,6 +16,8 @@ export type Settings = {
   grid: GridMode;
   flashMode: FlashSetting;
   facing: 'back' | 'front';
+  /** Capture mode: photo develop pipeline or video recording. */
+  mode: 'photo' | 'video';
   filterId: string;
   /** Capture timer seconds; 0 = off. */
   timerSeconds: number;
@@ -53,6 +55,7 @@ export const DEFAULT_SETTINGS: Settings = {
   grid: 'off',
   flashMode: 'auto',
   facing: 'back',
+  mode: 'photo',
   filterId: 'none',
   timerSeconds: 0,
   mirrorFront: true,
