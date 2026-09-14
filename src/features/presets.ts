@@ -7,6 +7,7 @@
  * (e.g. Portrait → Nature Light / Studio Light / Contour Light).
  */
 import type { DevelopOptions } from './gradePhoto';
+import { loadUserPresets, type UserPreset } from './userPresets';
 
 export type PresetSub = { id: string; name: string };
 
@@ -216,6 +217,119 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
       },
     },
   },
+  // ---- former filter looks, rebuilt as presets (v1.12 removed the filter
+  // system — every look is now a bundle of manual develop values) ----
+  {
+    id: 'film',
+    name: 'Film',
+    blurb: 'Warm, soft contrast, lifted blacks — golden hour and outdoors',
+    subs: [
+      { id: 'film-warm', name: 'Warm' },
+      { id: 'film-golden', name: 'Golden' },
+    ],
+    recipes: {
+      'film-warm': {
+        exposure: 0.06,
+        contrast: 0.06,
+        shadows: -0.08,
+        temperature: 0.15,
+        saturation: 0.94,
+        vignette: 0.12,
+      },
+      'film-golden': {
+        exposure: 0.1,
+        contrast: 0.08,
+        shadows: -0.12,
+        temperature: 0.22,
+        saturation: 0.96,
+        grain: 0.2,
+        vignette: 0.15,
+      },
+    },
+  },
+  {
+    id: 'classic',
+    name: 'Classic',
+    blurb: 'Clean, polished, formal — LinkedIn and Instagram safe',
+    subs: [
+      { id: 'classic-clean', name: 'Clean' },
+      { id: 'classic-formal', name: 'Formal' },
+    ],
+    recipes: {
+      'classic-clean': {
+        exposure: 0.05,
+        contrast: 0.14,
+        highlights: 0.06,
+        temperature: 0.02,
+        saturation: 0.92,
+        orangeSaturation: 0.9,
+      },
+      'classic-formal': {
+        exposure: 0.05,
+        contrast: 0.15,
+        highlights: 0.08,
+        temperature: 0.02,
+        saturation: 0.9,
+        orangeSaturation: 0.88,
+        sharpen: 0.2,
+        rolloff: 0.25,
+      },
+    },
+  },
+  {
+    id: 'onyx',
+    name: 'Onyx',
+    blurb: 'High-contrast black & white — timeless strong portraits',
+    subs: [
+      { id: 'onyx-pure', name: 'Pure' },
+      { id: 'onyx-smoke', name: 'Smoke' },
+    ],
+    recipes: {
+      'onyx-pure': {
+        exposure: 0.02,
+        contrast: 0.18,
+        bw: true,
+      },
+      'onyx-smoke': {
+        exposure: 0.02,
+        contrast: 0.2,
+        shadows: 0.15,
+        grain: 0.25,
+        vignette: 0.2,
+        bw: true,
+      },
+    },
+  },
+  {
+    id: 'graphite',
+    name: 'Graphite',
+    blurb: 'Dark and crisp, defined jaw, deeper shadows',
+    subs: [
+      { id: 'graphite-core', name: 'Core' },
+      { id: 'graphite-deep', name: 'Deep' },
+    ],
+    recipes: {
+      'graphite-core': {
+        exposure: -0.06,
+        contrast: 0.16,
+        shadows: 0.24,
+        temperature: -0.04,
+        saturation: 0.86,
+        orangeSaturation: 0.85,
+        vignette: 0.3,
+      },
+      'graphite-deep': {
+        exposure: -0.08,
+        contrast: 0.18,
+        shadows: 0.28,
+        temperature: -0.06,
+        saturation: 0.84,
+        orangeSaturation: 0.85,
+        microContrast: 0.3,
+        vignette: 0.35,
+      },
+    },
+  },
 ];
 
 export const getPreset = (id: string): CapturePreset =>
@@ -231,6 +345,10 @@ export function presetVeilLayers(recipe: DevelopOptions): {
   opacity: number;
 }[] {
   const layers: { color: string; opacity: number }[] = [];
+  if (recipe.bw) {
+    // Monochrome — a flat neutral veil suggests the desaturated output.
+    layers.push({ color: '#7A7D82', opacity: 0.3 });
+  }
   const e = recipe.exposure ?? 0;
   if (e > 0.03) layers.push({ color: '#FFFFFF', opacity: Math.min(0.16, e * 0.55) });
   if (e < -0.03) layers.push({ color: '#000000', opacity: Math.min(0.24, -e * 0.55) });
@@ -256,8 +374,25 @@ export function getPresetSub(preset: CapturePreset, subId: string): PresetSub {
   return preset.subs.find((s) => s.id === subId) ?? preset.subs[0];
 }
 
-/** Resolve the develop recipe for a preset + sub id. */
+/** True when the id refers to a user-saved preset (`user:<id>`). */
+export const isUserPresetId = (id: string): boolean => id.startsWith('user:');
+
+function findUserPreset(presetId: string): UserPreset | undefined {
+  if (!isUserPresetId(presetId)) return undefined;
+  return loadUserPresets().find((p) => p.id === presetId.slice(5));
+}
+
+/** Display name for any preset id — built-in or user-saved. */
+export function presetDisplayName(presetId: string): string {
+  const user = findUserPreset(presetId);
+  if (user) return user.name;
+  return getPreset(presetId).name;
+}
+
+/** Resolve the develop recipe for a preset + sub id (user presets included). */
 export function presetRecipe(presetId: string, subId: string): DevelopOptions {
+  const user = findUserPreset(presetId);
+  if (user) return user.develop;
   const preset = getPreset(presetId);
   return (
     preset.recipes[subId] ?? preset.recipes[Object.keys(preset.recipes)[0]] ?? {}

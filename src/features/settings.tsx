@@ -21,7 +21,6 @@ export type Settings = {
   facing: 'back' | 'front';
   /** Capture mode: photo develop pipeline or video recording. */
   mode: 'photo' | 'video';
-  filterId: string;
   /** Capture timer seconds; 0 = off. */
   timerSeconds: number;
   /** Mirror front-camera preview and captured selfie (what-you-see-is-what-you-get). */
@@ -65,7 +64,6 @@ export const DEFAULT_SETTINGS: Settings = {
   flashMode: 'auto',
   facing: 'back',
   mode: 'photo',
-  filterId: 'none',
   timerSeconds: 0,
   mirrorFront: true,
   zoomBackRatio: 1,
@@ -118,6 +116,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       if (storedRaw && !('develop' in storedRaw)) {
         loaded.develop = presetRecipe(loaded.preset, loaded.presetSub);
       }
+      // v1.11 → v1.12: the filter system is gone; drop the stale key.
+      delete (loaded as Partial<Settings> & { filterId?: string }).filterId;
       if (!alive) return;
       latest.current = loaded;
       setSettings(loaded);

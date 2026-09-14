@@ -2,10 +2,35 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import jpeg from 'jpeg-js';
 
-import type { PhotoGrade } from './filters';
-
 /** Cap the developed image's long edge — keeps JS processing in the 2–4s range. */
 const MAX_DIM = 2560;
+
+/**
+ * Base color-grade descriptors. Since v1.12 the filter system is gone — this
+ * type now only feeds the LUT builder inside applyGrade.
+ */
+export type PhotoGrade = {
+  /** Exposure shift in EV. */
+  exposure?: number;
+  /** Contrast amount pivoted at mid-gray. */
+  contrast?: number;
+  /** > 0 deepens shadows, < 0 lifts them. */
+  shadows?: number;
+  /** > 0 recovers (slightly darkens) highlights. */
+  highlights?: number;
+  /** -1 cool … +1 warm white balance. */
+  temperature?: number;
+  /** Global saturation multiplier. 1 = untouched. */
+  saturation?: number;
+  /** Desaturation applied inside the skin-hue zone. */
+  orangeSaturation?: number;
+  /** B&W channel mixer [R, G, B]. */
+  bwMix?: [number, number, number];
+  /** Corner falloff 0…0.4. */
+  vignette?: number;
+  /** Film grain strength 0…1. */
+  grain?: number;
+};
 
 // ImageManipulator's native render context rejects concurrent calls ("Call to
 // function 'Context.renderAsync' has been rejected") when several run back to
@@ -70,6 +95,8 @@ export function applyGrade(
     rolloff?: number;
     /** Varies the grain pattern per photo so it never repeats identically. */
     seed?: number;
+    /** Monochrome switch — applies the smooth-skin B&W channel mix. */
+    bw?: boolean;
   } = {},
 ): void {
   const px = new Uint8ClampedArray(data.buffer, data.byteOffset, data.length);
@@ -78,7 +105,7 @@ export function applyGrade(
   const highlights = grade.highlights ?? 0;
   const sat = grade.saturation ?? 1;
   const orange = grade.orangeSaturation ?? 1;
-  const bw = grade.bwMix;
+  const bw = grade.bwMix ?? (extras.bw ? ([0.3, 0.55, 0.15] as [number, number, number]) : undefined);
   const vig = grade.vignette ?? 0;
   const micro = extras.microContrast ?? 0;
   const sharpen = extras.sharpen ?? 0;
@@ -402,6 +429,8 @@ export type DevelopOptions = {
   splitShadow?: [number, number, number];
   splitHighlight?: [number, number, number];
   splitStrength?: number;
+  /** Monochrome: B&W with the smooth-skin channel mix. */
+  bw?: boolean;
 };
 
 /**
@@ -464,6 +493,7 @@ export async function developPhoto(
     splitHighlight: options.splitHighlight ?? options.temperatureSplit?.highlight,
     splitStrength: options.splitStrength ?? options.temperatureSplit?.strength,
     seed: Math.floor(Math.random() * 4096),
+    bw: options.bw,
   });
 
   // 4. Encode + write to cache.

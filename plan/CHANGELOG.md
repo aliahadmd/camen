@@ -357,3 +357,33 @@ Verified on device (Expo Go, user's live session): Cinematic/Teal selection →
 ADJUST shows contrast .16 / shadows .12 / highlights .10 / sat 94% / grain
 50% / vignette 22%; grain drag → 100% flips chip to CUSTOM; RESET restores
 CINEMATIC.
+
+## 2026-09-15 — v1.12.0 — filters removed, presets absorb everything
+
+The user: presets now work, so the separate filter system is redundant.
+Removed it — and its capabilities live on inside the preset system:
+
+REMOVED:
+- The filter carousel and the entire filter preset list (None/Natural/
+  Cinematic/Film/Classic/Onyx/Graphite). filters.ts + FilterCarousel.tsx
+  deleted; filterId removed from settings (legacy key stripped on load);
+  DB filter_id now always 'none' (column kept for schema stability).
+
+ADDED to the develop system (and thus to every preset + the manual panel):
+- MONO toggle — true B&W with the smooth-skin channel mix (was Onyx only).
+- SKIN slider (orangeSaturation 70–110%) — the skin-tone control the filter
+  grades had; presets already used it, now it's user-editable.
+- Veils: monochrome shows a neutral veil.
+
+NEW PRESETS (the old filter looks, converted to real preset bundles):
+- Film (Warm / Golden), Classic (Clean / Formal),
+  Onyx (Pure / Smoke — B&W), Graphite (Core / Deep).
+- Total: 11 built-in presets · 25 sub-looks.
+
+USER PRESETS:
+- SAVE in the ADJUST panel stores the current develop configuration under a
+  name (AsyncStorage, camen.userpresets.v1).
+- The preset picker lists saved presets under an MY tag (scrollable now —
+  11+ presets), each deletable with ✕; selecting one loads its values.
+- Shots taken with a saved user preset log `user:<id>` and SHOTS resolves
+  the name.

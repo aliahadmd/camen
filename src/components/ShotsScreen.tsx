@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -21,8 +21,8 @@ import {
   recentShots,
   type ShotRow,
 } from '../data/db';
-import { getPreset } from '../features/filters';
-import { getPreset as getCapturePreset, presetSubName } from '../features/presets';
+import { presetDisplayName, presetSubName } from '../features/presets';
+import { refreshUserPresets, userPresetName } from '../features/userPresets';
 
 type Tab = 'all' | 'photo' | 'video';
 
@@ -33,6 +33,11 @@ type Tab = 'all' | 'photo' | 'video';
  */
 export function ShotsScreen({ onClose }: { onClose: () => void }) {
   const insets = useSafeAreaInsets();
+  // warm the user-preset cache so logged `user:<id>` names resolve
+  const [, bumpVersion] = useState(0);
+  useEffect(() => {
+    void refreshUserPresets().then(() => bumpVersion((v) => v + 1));
+  }, []);
   const [tab, setTab] = useState<Tab>('all');
   const [version, setVersion] = useState(0);
   const [viewing, setViewing] = useState<ShotRow | null>(null);
@@ -162,12 +167,13 @@ function ShotDetail({
 }) {
   const isVideo = shot.media_type === 'video';
 
-  const preset = getPreset(shot.filter_id);
+  const userName = userPresetName(shot.preset_id);
   const captureName =
-    shot.preset_id === 'custom'
-      ? 'Custom'
-      : getCapturePreset(shot.preset_id).name;
-  const subName = presetSubName(shot.preset_id, shot.preset_sub).split(' ')[0];
+    shot.preset_id === 'custom' ? 'Custom' : userName ?? presetDisplayName(shot.preset_id);
+  const subName =
+    shot.preset_id === 'custom' || userName
+      ? ''
+      : presetSubName(shot.preset_id, shot.preset_sub).split(' ')[0];
   const mb = shot.size_bytes ? (shot.size_bytes / (1024 * 1024)).toFixed(1) : null;
   const time = new Date(shot.created_at).toLocaleTimeString([], {
     hour: '2-digit',
@@ -227,8 +233,9 @@ function ShotDetail({
 
       <View style={[styles.metaBar, { bottom: insets.bottom + spacing.xl }]} pointerEvents="none">
         <Text style={styles.metaText}>
-          {preset.name.toUpperCase()} · {captureName.toUpperCase()} {subName.toUpperCase()} ·{' '}
-          {shot.facing.toUpperCase()} · {shot.width}×{shot.height}
+          {captureName.toUpperCase()}
+          {subName ? ` ${subName.toUpperCase()}` : ''} · {shot.facing.toUpperCase()} ·{' '}
+          {shot.width}×{shot.height}
           {mb ? ` · ${mb} MB` : ''}
           {dur ? ` · ${dur}` : ''} · {time}
         </Text>

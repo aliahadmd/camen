@@ -1,5 +1,13 @@
 import Slider from '@react-native-community/slider';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
 import type { DevelopOptions } from '../features/gradePhoto';
@@ -9,7 +17,7 @@ import { presetRecipe } from '../features/presets';
  * ADJUST — the manual develop controls. These are the REAL values the develop
  * pipeline applies to the saved photo; presets are shortcuts that fill this
  * panel in. Every slider shows its current value; "Reset" reloads the active
- * preset's recipe.
+ * preset's recipe; SAVE stores the current configuration as a reusable preset.
  */
 
 type Row = {
@@ -70,6 +78,14 @@ const ROWS: Row[] = [
     step: 0.01,
     format: (v) => `${Math.round(v * 100)}%`,
   },
+  {
+    key: 'orangeSaturation',
+    label: 'Skin',
+    min: 0.7,
+    max: 1.1,
+    step: 0.01,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
   { key: 'grain', label: 'Grain', min: 0, max: 1, step: 0.01, format: (v) => `${Math.round(v * 100)}%` },
   {
     key: 'vignette',
@@ -87,13 +103,18 @@ export function DevelopPanel({
   presetSub,
   onChange,
   onClose,
+  onSavePreset,
 }: {
   develop: DevelopOptions;
   presetId: string;
   presetSub: string;
   onChange: (patch: Partial<DevelopOptions>) => void;
   onClose: () => void;
+  onSavePreset?: (name: string) => void;
 }) {
+  const mono = develop.bw === true;
+  const [saveName, setSaveName] = useState('');
+
   return (
     <>
       <Pressable
@@ -112,7 +133,21 @@ export function DevelopPanel({
             <Text style={styles.reset}>RESET</Text>
           </Pressable>
         </View>
-        <ScrollView>
+        <ScrollView style={styles.list}>
+          <View style={styles.monoRow}>
+            <Text style={styles.rowLabel}>Mono</Text>
+            <View style={styles.monoSpacer} />
+            <Pressable
+              onPress={() => onChange({ bw: !mono })}
+              style={[styles.monoPill, mono && styles.monoPillOn]}
+              accessibilityRole="button"
+              accessibilityLabel="Monochrome"
+            >
+              <Text style={[styles.monoPillText, mono && styles.monoPillTextOn]}>
+                {mono ? 'B&W ON' : 'B&W OFF'}
+              </Text>
+            </Pressable>
+          </View>
           {ROWS.map((row) => {
             const value = (develop[row.key] as number | undefined) ?? 0;
             return (
@@ -136,6 +171,30 @@ export function DevelopPanel({
               </View>
             );
           })}
+          {onSavePreset ? (
+            <View style={styles.saveRow}>
+              <TextInput
+                value={saveName}
+                onChangeText={setSaveName}
+                placeholder="Name this look…"
+                placeholderTextColor={colors.muted}
+                style={styles.saveInput}
+                maxLength={24}
+              />
+              <Pressable
+                onPress={() => {
+                  if (!saveName.trim()) return;
+                  onSavePreset(saveName);
+                  setSaveName('');
+                }}
+                style={[styles.saveBtn, !saveName.trim() && styles.saveBtnDisabled]}
+                accessibilityRole="button"
+                accessibilityLabel="Save preset"
+              >
+                <Text style={styles.saveBtnText}>SAVE</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </ScrollView>
         <Text style={styles.hint}>
           Presets fill these values in — change any and the shot is yours.
@@ -158,7 +217,7 @@ const styles = StyleSheet.create({
     left: spacing.l,
     right: spacing.l,
     bottom: 150,
-    maxHeight: 460,
+    maxHeight: 480,
     borderRadius: 14,
     backgroundColor: 'rgba(11,12,14,0.97)',
     borderWidth: StyleSheet.hairlineWidth,
@@ -183,6 +242,35 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 2,
   },
+  list: { flexGrow: 0 },
+  monoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 38,
+  },
+  monoSpacer: { flex: 1 },
+  monoPill: {
+    height: 28,
+    paddingHorizontal: 12,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monoPillOn: {
+    backgroundColor: colors.bone,
+    borderColor: colors.bone,
+  },
+  monoPillText: {
+    ...labelStyle,
+    color: colors.bone,
+    fontSize: 10,
+    letterSpacing: 1.5,
+  },
+  monoPillTextOn: {
+    color: colors.ink,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -202,6 +290,39 @@ const styles = StyleSheet.create({
     ...monoFont,
     width: 56,
     textAlign: 'right',
+  },
+  saveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.s,
+    marginTop: spacing.m,
+  },
+  saveInput: {
+    flex: 1,
+    height: 36,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    paddingHorizontal: 10,
+    color: colors.bone,
+    fontSize: 12,
+  },
+  saveBtn: {
+    height: 36,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: colors.brass,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveBtnDisabled: {
+    backgroundColor: colors.panel,
+  },
+  saveBtnText: {
+    ...labelStyle,
+    color: colors.ink,
+    fontSize: 10,
+    letterSpacing: 2,
   },
   hint: {
     ...labelStyle,

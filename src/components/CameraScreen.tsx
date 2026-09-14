@@ -6,6 +6,7 @@ import {
   AppState,
   Animated,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -26,21 +27,27 @@ import {
 } from '../features/deviceProfile';
 import { DEFAULT_SETTINGS, useSettings, type GridMode } from '../features/settings';
 import { frameRect, getFraming } from '../features/framings';
-import { getPreset } from '../features/filters';
 import {
   CAPTURE_PRESETS,
   getPreset as getCapturePreset,
   isCustomDevelop,
+  isUserPresetId,
+  presetDisplayName,
   presetRecipe,
   presetVeilLayers,
 } from '../features/presets';
+import {
+  deleteUserPreset,
+  loadUserPresets,
+  refreshUserPresets,
+  saveUserPreset,
+} from '../features/userPresets';
 import { useCamera } from '../features/useCamera';
 import { DevelopPanel } from './DevelopPanel';
 import { Chip, IconButton } from './Chips';
 import { CountdownRing } from './CountdownRing';
 import { EdgeLight } from './EdgeLight';
 import { FadeLabel } from './FadeLabel';
-import { FilterCarousel } from './FilterCarousel';
 import { FlashRing } from './FlashRing';
 import { Grid } from './Grid';
 import { PermissionGate } from './PermissionGate';
@@ -73,6 +80,15 @@ export function CameraScreen() {
   const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'ev'>('off');
   const [earPicker, setEarPicker] = useState<null | 'preset' | 'sub'>(null);
   const [showAdjust, setShowAdjust] = useState(false);
+  // user-saved presets — the version bump re-reads the cached list after saves
+  const [userPresetsVersion, setUserPresetsVersion] = useState(0);
+  useEffect(() => {
+    void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
+  }, []);
+  const userPresets = useMemo(
+    () => (void userPresetsVersion, loadUserPresets()),
+    [userPresetsVersion],
+  );
 
   // preview bounds for the grid
   const [bounds, setBounds] = useState({ w: 0, h: 0 });
@@ -161,7 +177,6 @@ export function CameraScreen() {
     );
   }
 
-  const activePreset = getPreset(settings.filterId);
   const activeFraming = getFraming(settings.framing);
   const frame = frameRect(activeFraming.aspect, bounds.w, bounds.h);
 
@@ -209,13 +224,8 @@ export function CameraScreen() {
               height: frame.h,
             }}
           >
-            {activePreset.overlay.map((layer, i) => (
-              <View
-                key={`${activePreset.id}-${i}`}
-                pointerEvents="none"
-                style={[StyleSheet.absoluteFill, { backgroundColor: layer.color, opacity: layer.opacity }]}
-              />
-            ))}
+            {/* the comment block that held the old filter overlay tints was
+                removed with the filter system in v1.12 */}
           </View>
 
           <View
@@ -309,8 +319,6 @@ export function CameraScreen() {
               style={[styles.bottomStack, { paddingBottom: insets.bottom + spacing.s }]}
               pointerEvents="box-none"
             >
-              <FadeLabel tick={settings.filterId} text={activePreset.name} style={styles.filterName} />
-
               {/* PHOTO | VIDEO mode switch */}
               <View style={styles.modeSwitch} pointerEvents="box-none">
                 <Pressable
@@ -444,13 +452,6 @@ export function CameraScreen() {
                 />
               </View>
 
-              {settings.mode === 'photo' ? (
-                <FilterCarousel
-                  selectedId={settings.filterId}
-                  onSelect={(id) => patch({ filterId: id })}
-                />
-              ) : null}
-
               {cam.recording ? (
                 <View style={styles.recBadge} pointerEvents="none">
                   <View style={styles.recDot} />
@@ -472,7 +473,7 @@ export function CameraScreen() {
                   <Text style={styles.earChipText}>
                     {isCustomDevelop(settings.develop, settings.preset, settings.presetSub)
                       ? 'CUSTOM'
-                      : (getCapturePreset(settings.preset).name || 'STD').toUpperCase().slice(0, 9)}
+                      : presetDisplayName(settings.preset).toUpperCase().slice(0, 9)}
                   </Text>
                 </Pressable>
                 <View style={styles.shutterWrap}>
@@ -495,7 +496,9 @@ export function CameraScreen() {
                   accessibilityLabel="Sub preset"
                 >
                   <Text style={styles.earChipText}>
-                    {(getCapturePreset(settings.preset).subs.find((s) => s.id === settings.presetSub)?.name ?? 'LOOK').toUpperCase().slice(0, 9)}
+                    {isUserPresetId(settings.preset)
+                      ? 'MY'
+                      : (getCapturePreset(settings.preset).subs.find((s) => s.id === settings.presetSub)?.name ?? 'LOOK').toUpperCase().slice(0, 9)}
                   </Text>
                 </Pressable>
                 <IconButton
@@ -520,38 +523,70 @@ export function CameraScreen() {
                   accessibilityLabel="Close preset picker"
                 />
                 <View style={[styles.earDock, { bottom: insets.bottom + 140 }]}>
-                  {earPicker === 'preset'
-                    ? CAPTURE_PRESETS.map((p) => (
-                        <Pressable
-                          key={p.id}
-                          style={[styles.earOption, settings.preset === p.id && styles.earOptionActive]}
-                          onPress={() => {
-                            patch({
-                              preset: p.id,
-                              presetSub: p.subs[0].id,
-                              develop: presetRecipe(p.id, p.subs[0].id),
-                            });
-                            setEarPicker(null);
-                          }}
-                        >
-                          <Text style={styles.earOptionText}>{p.name}</Text>
-                        </Pressable>
-                      ))
-                    : getCapturePreset(settings.preset).subs.map((s) => (
-                        <Pressable
-                          key={s.id}
-                          style={[styles.earOption, settings.presetSub === s.id && styles.earOptionActive]}
-                          onPress={() => {
-                            patch({
-                              presetSub: s.id,
-                              develop: presetRecipe(settings.preset, s.id),
-                            });
-                            setEarPicker(null);
-                          }}
-                        >
-                          <Text style={styles.earOptionText}>{s.name}</Text>
-                        </Pressable>
-                      ))}
+                  <ScrollView style={styles.earDockScroll}>
+                    {earPicker === 'preset'
+                      ? [
+                          ...userPresets.map((p) => ({ id: `user:${p.id}`, name: p.name, user: p })),
+                          ...CAPTURE_PRESETS.map((p) => ({ id: p.id, name: p.name, user: null as null | (typeof userPresets)[number] })),
+                        ].map((entry) => (
+                          <Pressable
+                            key={entry.id}
+                            style={[
+                              styles.earOption,
+                              settings.preset === entry.id && styles.earOptionActive,
+                            ]}
+                            onPress={() => {
+                              const subId = entry.user ? 'my' : getCapturePreset(entry.id).subs[0].id;
+                              patch({
+                                preset: entry.id,
+                                presetSub: subId,
+                                develop: presetRecipe(entry.id, subId),
+                              });
+                              setEarPicker(null);
+                            }}
+                          >
+                            <View style={styles.earOptionRow}>
+                              {entry.user ? (
+                                <Text style={styles.earOptionTag}>MY</Text>
+                              ) : null}
+                              <Text style={styles.earOptionText}>{entry.name}</Text>
+                              <View style={styles.earOptionSpacer} />
+                              {entry.user ? (
+                                <Pressable
+                                  hitSlop={8}
+                                  onPress={() => {
+                                    void deleteUserPreset(entry.user!.id).then(() => {
+                                      if (settings.preset === entry.id) {
+                                        patch({ preset: 'standard', presetSub: 'standard', develop: {} });
+                                      }
+                                      void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
+                                    });
+                                  }}
+                                  accessibilityRole="button"
+                                  accessibilityLabel={`Delete ${entry.name}`}
+                                >
+                                  <Text style={styles.earOptionDelete}>✕</Text>
+                                </Pressable>
+                              ) : null}
+                            </View>
+                          </Pressable>
+                        ))
+                      : getCapturePreset(settings.preset).subs.map((s) => (
+                          <Pressable
+                            key={s.id}
+                            style={[styles.earOption, settings.presetSub === s.id && styles.earOptionActive]}
+                            onPress={() => {
+                              patch({
+                                presetSub: s.id,
+                                develop: presetRecipe(settings.preset, s.id),
+                              });
+                              setEarPicker(null);
+                            }}
+                          >
+                            <Text style={styles.earOptionText}>{s.name}</Text>
+                          </Pressable>
+                        ))}
+                  </ScrollView>
                 </View>
               </>
             ) : null}
@@ -564,6 +599,12 @@ export function CameraScreen() {
                 presetSub={settings.presetSub}
                 onChange={(p) => patch({ develop: { ...settings.develop, ...p } })}
                 onClose={() => setShowAdjust(false)}
+                onSavePreset={(name) => {
+                  void saveUserPreset(name, settings.develop).then((saved) => {
+                    patch({ preset: `user:${saved.id}`, presetSub: 'my' });
+                    void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
+                  });
+                }}
               />
             ) : null}
           </Animated.View>
@@ -784,6 +825,23 @@ const styles = StyleSheet.create({
   earOptionText: {
     color: colors.bone,
     fontSize: 12,
+  },
+  earDockScroll: { flexGrow: 0 },
+  earOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.s,
+  },
+  earOptionTag: {
+    ...labelStyle,
+    color: colors.brass,
+    fontSize: 9,
+  },
+  earOptionSpacer: { flex: 1 },
+  earOptionDelete: {
+    color: colors.muted,
+    fontSize: 14,
+    paddingHorizontal: 6,
   },
   earChip: {
     minWidth: 58,

@@ -14,14 +14,12 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { clampRatio, type DeviceProfile } from './deviceProfile';
-import { getPreset, hasGrade } from './filters';
 import { cropToAspect, developPhoto } from './gradePhoto';
 import { getFraming } from './framings';
-import { presetRecipe } from './presets';
 import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
 import { queuedManipulate } from './gradePhoto';
-import { isCustomDevelop } from './presets';
+import { developKey, isCustomDevelop, isUserPresetId, presetRecipe } from './presets';
 import { dlog } from '../log';
 import type { Settings } from './settings';
 
@@ -276,16 +274,15 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         }
       }
 
-      const preset = getPreset(settings.filterId);
       // The user's own develop values — presets loaded them, the user owns them.
       const recipe = settings.develop;
       const needsDevelop =
-        hasGrade(preset) || evOffset !== 0 || settings.iso > 100 || settings.tone === 'hdr' ||
+        evOffset !== 0 || settings.iso > 100 || settings.tone === 'hdr' ||
         Object.keys(recipe).length > 0;
       if (needsDevelop) {
         setProcessing(true);
         try {
-          const dev = await developPhoto(fileUri, w, h, preset.grade, {
+          const dev = await developPhoto(fileUri, w, h, {}, {
             ev: evOffset,
             iso: settings.iso,
             tone: settings.tone,
@@ -335,7 +332,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     [
       settings.develop,
       settings.framing,
-      settings.filterId,
       settings.format,
       settings.iso,
       settings.tone,
@@ -375,21 +371,30 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       } catch (e) {
         dlog('[camen] gallery export failed:', e);
       }
-      // `raw` marks speed-priority burst originals: no crop, no filter grade,
-      // no develop values touched them — the log must not claim otherwise.
-      // Modified develop values log as 'custom' — the preset name would lie.
-      const loggedPreset =
-        meta.raw || isCustomDevelop(settings.develop, settings.preset, settings.presetSub)
-          ? meta.raw
-            ? 'standard'
-            : 'custom'
-          : settings.preset;
+      // `raw` marks speed-priority burst originals: no crop, no develop values
+      // touched them — the log must not claim otherwise.
+      // Modified develop values log as 'custom'; user presets log as their id.
+      const isUser = isUserPresetId(settings.preset);
+      const matchesUser =
+        isUser && developKey(settings.develop) === developKey(presetRecipe(settings.preset, settings.presetSub));
+      let loggedPreset: string;
+      if (meta.raw) {
+        loggedPreset = 'standard';
+      } else if (matchesUser) {
+        loggedPreset = settings.preset;
+      } else if (
+        isCustomDevelop(settings.develop, settings.preset, settings.presetSub)
+      ) {
+        loggedPreset = 'custom';
+      } else {
+        loggedPreset = settings.preset;
+      }
       insertShot({
         created_at: Date.now(),
         path,
         thumb_path: thumbPath,
         gallery_uri: galleryUri,
-        filter_id: meta.raw ? 'none' : settings.filterId,
+        filter_id: 'none', // filter system removed in v1.12
         facing,
         width: shot.width,
         height: shot.height,
@@ -424,7 +429,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       refreshThumbnail,
       settings.develop,
       settings.edgeLight,
-      settings.filterId,
       settings.flashMode,
       settings.framing,
       settings.iso,
