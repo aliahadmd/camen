@@ -264,6 +264,24 @@ export function presetRecipe(presetId: string, subId: string): DevelopOptions {
   );
 }
 
+/** Stable key of a develop object so values can be compared, not references. */
+export function developKey(d: DevelopOptions): string {
+  return JSON.stringify(
+    Object.keys(d)
+      .sort()
+      .map((k) => [k, d[k as keyof DevelopOptions]]),
+  );
+}
+
+/** True when the user's develop values no longer match the selected preset. */
+export function isCustomDevelop(
+  develop: DevelopOptions,
+  presetId: string,
+  subId: string,
+): boolean {
+  return developKey(develop) !== developKey(presetRecipe(presetId, subId));
+}
+
 export function presetSubName(presetId: string, subId: string): string {
   const preset = getPreset(presetId);
   const sub = preset.subs.find((s) => s.id === subId);

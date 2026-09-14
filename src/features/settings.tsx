@@ -9,6 +9,9 @@ import {
   type ReactNode,
 } from 'react';
 
+import type { DevelopOptions } from './gradePhoto';
+import { presetRecipe } from './presets';
+
 export type GridMode = 'off' | 'thirds' | 'golden';
 export type FlashSetting = 'auto' | 'on' | 'off';
 
@@ -49,6 +52,12 @@ export type Settings = {
   preset: string;
   /** Sub-preset id within the capture preset. */
   presetSub: string;
+  /**
+   * The live develop configuration — the visible, editable manual values that
+   * drive the saved photo's grade. Presets are shortcuts that WRITE their
+   * recipe into this object; after that the values belong to the user.
+   */
+  develop: DevelopOptions;
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -72,6 +81,7 @@ export const DEFAULT_SETTINGS: Settings = {
   iso: 0,
   preset: 'standard',
   presetSub: 'standard',
+  develop: {},
 };
 
 const STORAGE_KEY = 'camen.settings.v1';
@@ -92,11 +102,21 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     let alive = true;
     (async () => {
       let loaded: Settings = { ...DEFAULT_SETTINGS };
+      let storedRaw: Partial<Settings> | null = null;
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) loaded = { ...loaded, ...(JSON.parse(raw) as Partial<Settings>) };
+        if (raw) {
+          storedRaw = JSON.parse(raw) as Partial<Settings>;
+          loaded = { ...loaded, ...storedRaw };
+        }
       } catch {
         // corrupted store — fall back to defaults
+      }
+      // v1.10 → v1.11 migration: settings saved before `develop` existed keep
+      // their chosen look by seeding the panel from the stored preset. (Check
+      // the STORED object — the merged one already carries the {} default.)
+      if (storedRaw && !('develop' in storedRaw)) {
+        loaded.develop = presetRecipe(loaded.preset, loaded.presetSub);
       }
       if (!alive) return;
       latest.current = loaded;

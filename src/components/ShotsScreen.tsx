@@ -163,7 +163,10 @@ function ShotDetail({
   const isVideo = shot.media_type === 'video';
 
   const preset = getPreset(shot.filter_id);
-  const captureName = getCapturePreset(shot.preset_id).name;
+  const captureName =
+    shot.preset_id === 'custom'
+      ? 'Custom'
+      : getCapturePreset(shot.preset_id).name;
   const subName = presetSubName(shot.preset_id, shot.preset_sub).split(' ')[0];
   const mb = shot.size_bytes ? (shot.size_bytes / (1024 * 1024)).toFixed(1) : null;
   const time = new Date(shot.created_at).toLocaleTimeString([], {

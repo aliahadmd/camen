@@ -27,8 +27,15 @@ import {
 import { DEFAULT_SETTINGS, useSettings, type GridMode } from '../features/settings';
 import { frameRect, getFraming } from '../features/framings';
 import { getPreset } from '../features/filters';
-import { CAPTURE_PRESETS, getPreset as getCapturePreset, presetRecipe, presetVeilLayers } from '../features/presets';
+import {
+  CAPTURE_PRESETS,
+  getPreset as getCapturePreset,
+  isCustomDevelop,
+  presetRecipe,
+  presetVeilLayers,
+} from '../features/presets';
 import { useCamera } from '../features/useCamera';
+import { DevelopPanel } from './DevelopPanel';
 import { Chip, IconButton } from './Chips';
 import { CountdownRing } from './CountdownRing';
 import { EdgeLight } from './EdgeLight';
@@ -65,6 +72,7 @@ export function CameraScreen() {
   const [showSettings, setShowSettings] = useState(false);
   const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'ev'>('off');
   const [earPicker, setEarPicker] = useState<null | 'preset' | 'sub'>(null);
+  const [showAdjust, setShowAdjust] = useState(false);
 
   // preview bounds for the grid
   const [bounds, setBounds] = useState({ w: 0, h: 0 });
@@ -78,7 +86,11 @@ export function CameraScreen() {
 
   // idle fade for the control rails
   const holdUI =
-    cam.countdown.active || cam.phase !== 'ready' || earPicker !== null || cam.recording;
+    cam.countdown.active ||
+    cam.phase !== 'ready' ||
+    earPicker !== null ||
+    showAdjust ||
+    cam.recording;
   const { railOpacity, bump } = useIdleFade(holdUI);
 
   // double-tap on the viewfinder flips the camera (single taps just wake rails)
@@ -219,7 +231,9 @@ export function CameraScreen() {
             <Grid mode={settings.grid} width={frame.w} height={frame.h} />
 
           {/* capture-preset preview veils — instant feedback for the tonal recipe */}
-          {presetVeilLayers(presetRecipe(settings.preset, settings.presetSub)).map((layer, i) => (
+          {/* live approximation of the CURRENT develop values (what a preset
+              loaded or what the user set by hand) */}
+          {presetVeilLayers(settings.develop).map((layer, i) => (
             <View
               key={`pv-${i}`}
               pointerEvents="none"
@@ -392,6 +406,15 @@ export function CameraScreen() {
                   onPress={() => setRulerMode((m) => (m === 'ev' ? 'off' : 'ev'))}
                   accessibilityLabel="Exposure compensation"
                 />
+                {settings.mode === 'photo' ? (
+                  <Chip
+                    icon="options"
+                    text="ADJUST"
+                    active={showAdjust}
+                    onPress={() => setShowAdjust((s) => !s)}
+                    accessibilityLabel="Manual develop controls"
+                  />
+                ) : null}
                 {cam.processing ? (
                   <View style={styles.devChip} pointerEvents="none">
                     <FadeLabel text="Developing" ms={60000} showOnMount />
@@ -447,7 +470,9 @@ export function CameraScreen() {
                   accessibilityLabel="Capture preset"
                 >
                   <Text style={styles.earChipText}>
-                    {(getCapturePreset(settings.preset).name || 'STD').toUpperCase().slice(0, 9)}
+                    {isCustomDevelop(settings.develop, settings.preset, settings.presetSub)
+                      ? 'CUSTOM'
+                      : (getCapturePreset(settings.preset).name || 'STD').toUpperCase().slice(0, 9)}
                   </Text>
                 </Pressable>
                 <View style={styles.shutterWrap}>
@@ -484,7 +509,9 @@ export function CameraScreen() {
             </View>
 
             {/* preset pickers — anchored just above the selector button,
-                fully decoupled from the bottom row so the shutter never moves */}
+                fully decoupled from the bottom row so the shutter never moves.
+                A selection WRITES its recipe into the user's develop values —
+                a preset is a shortcut, not a hidden layer. */}
             {earPicker !== null ? (
               <>
                 <Pressable
@@ -499,7 +526,11 @@ export function CameraScreen() {
                           key={p.id}
                           style={[styles.earOption, settings.preset === p.id && styles.earOptionActive]}
                           onPress={() => {
-                            patch({ preset: p.id, presetSub: p.subs[0].id });
+                            patch({
+                              preset: p.id,
+                              presetSub: p.subs[0].id,
+                              develop: presetRecipe(p.id, p.subs[0].id),
+                            });
                             setEarPicker(null);
                           }}
                         >
@@ -511,7 +542,10 @@ export function CameraScreen() {
                           key={s.id}
                           style={[styles.earOption, settings.presetSub === s.id && styles.earOptionActive]}
                           onPress={() => {
-                            patch({ presetSub: s.id });
+                            patch({
+                              presetSub: s.id,
+                              develop: presetRecipe(settings.preset, s.id),
+                            });
                             setEarPicker(null);
                           }}
                         >
@@ -520,6 +554,17 @@ export function CameraScreen() {
                       ))}
                 </View>
               </>
+            ) : null}
+
+            {/* manual develop controls — the real values presets load into */}
+            {showAdjust ? (
+              <DevelopPanel
+                develop={settings.develop}
+                presetId={settings.preset}
+                presetSub={settings.presetSub}
+                onChange={(p) => patch({ develop: { ...settings.develop, ...p } })}
+                onClose={() => setShowAdjust(false)}
+              />
             ) : null}
           </Animated.View>
 

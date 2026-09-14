@@ -333,3 +333,27 @@ New features:
   on every shot; GPS line under the metadata when geotagged.
 - Double-tap the viewfinder flips the camera (blocked while recording).
 - Settings DEVICE section now shows archive stats (shots + total MB).
+
+## 2026-09-15 — v1.11.0 — presets are now REAL manual configurations
+
+The user was right: a preset that never shows or yields its values is a black
+box, not a preset. Rebuilt the semantics:
+
+- `settings.develop` IS the develop configuration — visible, editable, persisted.
+- Selecting a preset/sub WRITES its recipe into `develop` (a shortcut that
+  fills the manual controls, not a hidden layer).
+- New ADJUST chip (photo mode) opens a manual panel: Exposure, Warmth,
+  Contrast, Shadows, Highlights, Saturation, Grain, Vignette — each showing
+  its live value; RESET reloads the active preset's recipe.
+- Editing any value flips the preset chip to CUSTOM (comparison by value, not
+  reference); the develop veils mirror the current values, and shots taken
+  with modified values log honestly as preset 'custom' (SHOTS shows CUSTOM).
+- Migration: settings stored before v1.11 seed `develop` from their saved
+  preset on first load (checks the stored object, not the merged default).
+- Pipeline now reads settings.develop directly — the old
+  presetRecipe-at-capture path is gone.
+
+Verified on device (Expo Go, user's live session): Cinematic/Teal selection →
+ADJUST shows contrast .16 / shadows .12 / highlights .10 / sat 94% / grain
+50% / vignette 22%; grain drag → 100% flips chip to CUSTOM; RESET restores
+CINEMATIC.

@@ -21,6 +21,7 @@ import { presetRecipe } from './presets';
 import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
 import { queuedManipulate } from './gradePhoto';
+import { isCustomDevelop } from './presets';
 import { dlog } from '../log';
 import type { Settings } from './settings';
 
@@ -276,7 +277,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
 
       const preset = getPreset(settings.filterId);
-      const recipe = presetRecipe(settings.preset, settings.presetSub);
+      // The user's own develop values — presets loaded them, the user owns them.
+      const recipe = settings.develop;
       const needsDevelop =
         hasGrade(preset) || evOffset !== 0 || settings.iso > 100 || settings.tone === 'hdr' ||
         Object.keys(recipe).length > 0;
@@ -331,15 +333,12 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       return { uri: fileUri, width: w, height: h, extras: created.filter((u) => u !== fileUri) };
     },
     [
+      settings.develop,
       settings.framing,
       settings.filterId,
       settings.format,
       settings.iso,
       settings.tone,
-      // preset + sub MUST be listed: without them a preset change keeps using
-      // the previous recipe until some other setting happens to change.
-      settings.preset,
-      settings.presetSub,
     ],
   );
 
@@ -377,7 +376,14 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         dlog('[camen] gallery export failed:', e);
       }
       // `raw` marks speed-priority burst originals: no crop, no filter grade,
-      // no preset recipe touched them — the log must not claim otherwise.
+      // no develop values touched them — the log must not claim otherwise.
+      // Modified develop values log as 'custom' — the preset name would lie.
+      const loggedPreset =
+        meta.raw || isCustomDevelop(settings.develop, settings.preset, settings.presetSub)
+          ? meta.raw
+            ? 'standard'
+            : 'custom'
+          : settings.preset;
       insertShot({
         created_at: Date.now(),
         path,
@@ -394,7 +400,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         edge_light: settings.edgeLight,
         device: 'Redmi K80 Pro',
         framing: meta.raw ? 'full' : settings.framing,
-        preset_id: meta.raw ? 'standard' : settings.preset,
+        preset_id: loggedPreset,
         preset_sub: meta.raw ? 'standard' : settings.presetSub,
         ev: meta.ev,
         iso: meta.raw ? 0 : settings.iso,
@@ -416,6 +422,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       facing,
       makeThumb,
       refreshThumbnail,
+      settings.develop,
       settings.edgeLight,
       settings.filterId,
       settings.flashMode,
