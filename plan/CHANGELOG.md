@@ -387,3 +387,27 @@ USER PRESETS:
   11+ presets), each deletable with ✕; selecting one loads its values.
 - Shots taken with a saved user preset log `user:<id>` and SHOTS resolves
   the name.
+
+## 2026-09-16 — v1.12.1 — save-pipeline bug hunt (SHOTS never updated)
+
+Symptom: captures saved the archive file but the SHOTS log stayed stale and
+the shutter went busy forever.
+
+Instrumentation (release-visible rlog) pinpointed it:
+- `insertShot` SQL had **24 placeholders for 25 columns** (the v1.10 video
+  columns migration missed one `?`) → every insert threw
+  `24 values for 25 columns` → 'Save failed'. The v1.12 SHOT_COLUMNS refactor
+  also kept the wrong count. Fixed + count-asserted (25/25/25).
+- The serialized manipulator queue could HANG (not reject) when the native
+  call stalls → develop awaited it forever → phase stuck at 'saving', shutter
+  dead. Added a 45s watchdog: hung develops fall back to the ungraded copy
+  and release the shutter.
+- Gallery export now requests media permissions at first save (standalone
+  builds grant at runtime); denied → archive-only, documented.
+- Pipeline instrumentation (manip/decode/grade/encode timings) kept — dev
+  gold: decode ~8s, grade ~8s, encode ~10s per 12MP shot in dev; release
+  ~11s total.
+
+Verified end-to-end on device: TestLookll (user preset, B&W) capture →
+archive → gallery permission → SHOTS·6 grid → detail
+"TESTLOOKLL · BACK · 2560×2560 · 1.2 MB".

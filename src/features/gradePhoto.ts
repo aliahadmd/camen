@@ -2,6 +2,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import jpeg from 'jpeg-js';
 
+import { dlog, rlog } from '../log';
+
 /** Cap the developed image's long edge — keeps JS processing in the 2–4s range. */
 const MAX_DIM = 2560;
 
@@ -49,8 +51,10 @@ export function queuedManipulate<T>(job: () => Promise<T>): Promise<T> {
     () => undefined,
     () => undefined,
   );
+  rlog('[camen] manip: queued');
   return run.catch(async (e: unknown) => {
     if (!isManipRace(e)) throw e;
+    rlog('[camen] manip: race detected, retrying once');
     await new Promise((r) => setTimeout(r, 180));
     // Retry inside the chain so it stays serialized.
     return queuedManipulate(job);
@@ -459,11 +463,14 @@ export async function developPhoto(
   }
 
   // 2. Read + decode. (RN fetch on file:// returns error-text bodies for
-  // missing/unreadable files, so read bytes through the file system module.)
+  //    missing/unreadable files, so read bytes through the file system module.)
+  rlog('[camen] develop: reading source');
   const b64 = await FileSystem.readAsStringAsync(uri, {
     encoding: FileSystem.EncodingType.Base64,
   });
+  rlog('[camen] develop: decoding jpeg');
   const raw = jpeg.decode(base64ToBytes(b64), { useTArray: true });
+  rlog('[camen] develop: decoded', raw.width, 'x', raw.height);
 
   // 3. Grade in place, with EV / simulated-ISO / HDR tone folded into the grade,
   //    plus the capture-preset tonal recipe (exposure/contrast/shadows/split/…).
@@ -495,9 +502,12 @@ export async function developPhoto(
     seed: Math.floor(Math.random() * 4096),
     bw: options.bw,
   });
+  rlog('[camen] develop: grade applied');
 
   // 4. Encode + write to cache.
+  rlog('[camen] develop: encoding');
   const out = jpeg.encode({ data: raw.data, width: raw.width, height: raw.height }, 90);
+  rlog('[camen] develop: encoded', out.data.length, 'bytes');
   const cacheDir = FileSystem.cacheDirectory;
   if (!cacheDir) throw new Error('no cache directory');
   const outUri = `${cacheDir}camen_developed_${Date.now()}.jpg`;

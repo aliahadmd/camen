@@ -20,7 +20,7 @@ import { injectGpsExif } from './geotag';
 import { insertShot, latestShot } from '../data/db';
 import { queuedManipulate } from './gradePhoto';
 import { developKey, isCustomDevelop, isUserPresetId, presetRecipe } from './presets';
-import { dlog } from '../log';
+import { dlog, rlog } from '../log';
 import type { Settings } from './settings';
 
 export type Phase = 'ready' | 'capturing' | 'saving' | 'recording';
@@ -251,7 +251,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           w = h;
           h = t;
         } catch (e) {
-          dlog('[camen] orientation rotate failed:', e);
+          rlog('[camen] orientation rotate failed:', e);
         }
       }
 
@@ -270,7 +270,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           w = cropped.width;
           h = cropped.height;
         } catch (e) {
-          dlog('[camen] crop failed, keeping native aspect:', e);
+          rlog('[camen] crop failed, keeping native aspect:', e);
         }
       }
 
@@ -282,18 +282,25 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       if (needsDevelop) {
         setProcessing(true);
         try {
-          const dev = await developPhoto(fileUri, w, h, {}, {
-            ev: evOffset,
-            iso: settings.iso,
-            tone: settings.tone,
-            ...recipe,
-          });
+          // Watchdog: a native stage that never settles must not brick the
+          // shutter — fall back to the raw capture after 45s.
+          const dev = await Promise.race([
+            developPhoto(fileUri, w, h, {}, {
+              ev: evOffset,
+              iso: settings.iso,
+              tone: settings.tone,
+              ...recipe,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('develop timeout')), 45000),
+            ),
+          ]);
           created.push(dev.uri);
           fileUri = dev.uri;
           w = dev.width;
           h = dev.height;
         } catch (e) {
-          dlog('[camen] develop failed, saving ungraded copy:', e);
+          rlog('[camen] develop failed, saving ungraded copy:', e);
           // Own a private copy: the original cache file must stay intact for
           // AEB variants of the same capture.
           const cacheDir = FileSystem.cacheDirectory;
@@ -323,7 +330,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           created.push(converted.uri);
           fileUri = converted.uri;
         } catch (e) {
-          dlog('[camen] webp conversion failed:', e);
+          rlog('[camen] webp conversion failed:', e);
         }
       }
 
@@ -351,11 +358,11 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       const ext = shot.uri.split('.').pop()?.toLowerCase() === 'webp' ? 'webp' : 'jpg';
       const { path, size } = await archiveShot(shot.uri, ext);
       if (coords) {
-        dlog('[camen] geotag', coords.lat.toFixed(5), coords.lon.toFixed(5));
+        rlog('[camen] geotag', coords.lat.toFixed(5), coords.lon.toFixed(5));
         try {
           await injectGpsExif(path, coords.lat, coords.lon);
         } catch (e) {
-          dlog('[camen] gps exif failed:', e);
+          rlog('[camen] gps exif failed:', e);
         }
       }
       let thumbPath = '';
@@ -366,10 +373,18 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
       let galleryUri: string | null = null;
       try {
+        // Media permissions are runtime-granted on standalone builds; ask
+        // once, then export. Denied → archive-only (the app's own folder is
+        // the source of truth anyway).
+        const mediaPerm = await MediaLibrary.getPermissionsAsync();
+        if (!mediaPerm.granted) {
+          const req = await MediaLibrary.requestPermissionsAsync();
+          if (!req.granted) throw new Error('media permission denied');
+        }
         const asset = await MediaLibrary.createAssetAsync(path);
         galleryUri = asset?.uri ?? null;
       } catch (e) {
-        dlog('[camen] gallery export failed:', e);
+        rlog('[camen] gallery export failed:', e);
       }
       // `raw` marks speed-priority burst originals: no crop, no develop values
       // touched them — the log must not claim otherwise.
@@ -551,7 +566,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
               meta: { ev: ev + bracket, aeb: true },
             });
           } catch (e) {
-            dlog('[camen] aeb variant failed:', e);
+            rlog('[camen] aeb variant failed:', e);
           }
         }
       }
@@ -565,7 +580,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         }
         if (settings.aeb && results.length === 3) showToast('AEB ×3 saved');
       } catch (e) {
-        dlog('[camen] save failed:', e);
+        rlog('[camen] save failed:', e);
         setSaveError(true);
         showToast('Save failed');
       } finally {
@@ -574,7 +589,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         }
       }
     } catch (e) {
-      dlog('[camen] capture failed:', e);
+      rlog('[camen] capture failed:', e);
       showToast('Capture failed');
     } finally {
       if (useScreenFlash) setScreenFlashArmed(false);
@@ -698,7 +713,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         try {
           await saveShot(frame, coords, { ev: 0, aeb: false, raw: true });
         } catch (e) {
-          dlog('[camen] burst save failed:', e);
+          rlog('[camen] burst save failed:', e);
           setSaveError(true);
         }
       }
@@ -759,7 +774,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       try {
         vid = await cameraRef.current!.recordAsync({ maxDuration: 60 * 10 });
       } catch (e) {
-        dlog('[camen] record failed:', e);
+        rlog('[camen] record failed:', e);
       }
       stopRecordTimer();
       setRecording(false);
@@ -782,7 +797,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           { mediaType: 'video', durationMs },
         );
       } catch (e) {
-        dlog('[camen] video save failed:', e);
+        rlog('[camen] video save failed:', e);
         setSaveError(true);
         showToast('Save failed');
       } finally {
