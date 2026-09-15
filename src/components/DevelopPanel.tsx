@@ -113,6 +113,7 @@ export function DevelopPanel({
   onSavePreset?: (name: string) => void;
 }) {
   const mono = develop.bw === true;
+  const hdr = develop.hdr === true;
   const [saveName, setSaveName] = useState('');
 
   return (
@@ -135,7 +136,7 @@ export function DevelopPanel({
         </View>
         <ScrollView style={styles.list}>
           <View style={styles.monoRow}>
-            <Text style={styles.rowLabel}>Mono</Text>
+            <Text style={styles.rowLabel}>Styles</Text>
             <View style={styles.monoSpacer} />
             <Pressable
               onPress={() => onChange({ bw: !mono })}
@@ -145,6 +146,16 @@ export function DevelopPanel({
             >
               <Text style={[styles.monoPillText, mono && styles.monoPillTextOn]}>
                 {mono ? 'B&W ON' : 'B&W OFF'}
+              </Text>
+            </Pressable>
+            <Pressable
+              onPress={() => onChange({ hdr: !hdr })}
+              style={[styles.monoPill, hdr && styles.monoPillOn]}
+              accessibilityRole="button"
+              accessibilityLabel="HDR look"
+            >
+              <Text style={[styles.monoPillText, hdr && styles.monoPillTextOn]}>
+                {hdr ? 'HDR ON' : 'HDR OFF'}
               </Text>
             </Pressable>
           </View>

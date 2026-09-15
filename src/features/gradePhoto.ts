@@ -401,14 +401,14 @@ export async function cropToAspect(
   ).then((out) => ({ uri: out.uri, width: out.width, height: out.height }));
 }
 
-/** Develop-time capture options: EV/ISO/tone + capture-preset tonal recipe. */
+/** Develop-time capture options: EV/ISO/HDR + capture-preset tonal recipe. */
 export type DevelopOptions = {
   /** Manual exposure compensation in EV (−2…+2). */
   ev?: number;
   /** Simulated ISO: gain + proportional grain. 0/undefined = none. */
   iso?: number;
-  /** Tone style: HDR lifts shadows and recovers highlights. */
-  tone?: 'ldr' | 'hdr';
+  /** HDR look: lifted shadows, recovered highlights, extra rolloff. */
+  hdr?: boolean;
   /** Split-toning: shadow + highlight tint colors (0…1 rgb) and strength. */
   temperatureSplit?: {
     shadow: [number, number, number];
@@ -479,7 +479,7 @@ export async function developPhoto(
   const isoStops = options.iso && options.iso > 100 ? Math.log2(options.iso / 100) : 0;
   const evBoost = Math.min(2, isoStops) + (options.ev ?? 0);
   const isoGrain = Math.min(0.55, Math.max(0, isoStops) * 0.17);
-  const hdr = options.tone === 'hdr';
+  const hdr = options.hdr === true;
   const effective: PhotoGrade = {
     ...grade,
     exposure: (grade.exposure ?? 0) + evBoost + (options.exposure ?? 0),

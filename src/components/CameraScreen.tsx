@@ -66,6 +66,16 @@ const EDGE_LABEL = [
   'Edge light · High',
 ];
 
+/** Compact chip label for the combined EV + ISO control. */
+function exposureChipText(ev: number, iso: number): string {
+  const evPart = ev === 0 ? '' : `EV${ev > 0 ? '+' : ''}${ev}`;
+  const isoPart = iso === 0 ? '' : `${iso}`;
+  if (evPart && isoPart) return `${evPart}·${isoPart}`;
+  if (evPart) return evPart;
+  if (isoPart) return `ISO${isoPart}`;
+  return 'EXP';
+}
+
 export function CameraScreen() {
   const { settings, patch } = useSettings();
   const settingsReady = settings !== null;
@@ -77,7 +87,7 @@ export function CameraScreen() {
 
   const [showShots, setShowShots] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'ev'>('off');
+  const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'exposure'>('off');
   const [earPicker, setEarPicker] = useState<null | 'preset' | 'sub'>(null);
   const [showAdjust, setShowAdjust] = useState(false);
   // user-saved presets — the version bump re-reads the cached list after saves
@@ -368,16 +378,33 @@ export function CameraScreen() {
                   stepPx={26}
                 />
               ) : null}
-              {rulerMode === 'ev' ? (
-                <Ruler
-                  min={-2}
-                  max={2}
-                  step={0.25}
-                  value={cam.ev}
-                  onChange={cam.setEv}
-                  format={(v) => (v > 0 ? `+${v}` : `${v}`)}
-                  readoutPrefix="EV"
-                />
+              {rulerMode === 'exposure' ? (
+                <>
+                  <Ruler
+                    min={-2}
+                    max={2}
+                    step={0.25}
+                    value={cam.ev}
+                    onChange={cam.setEv}
+                    format={(v) => (v > 0 ? `+${v}` : `${v}`)}
+                    readoutPrefix="EV"
+                  />
+                  <View style={styles.isoRow} pointerEvents="box-none">
+                    {[0, 100, 200, 400, 800, 1600, 3200].map((isoValue) => (
+                      <Pressable
+                        key={isoValue}
+                        onPress={() => patch({ iso: isoValue })}
+                        style={[styles.isoPill, settings.iso === isoValue && styles.isoPillActive]}
+                        accessibilityRole="button"
+                        accessibilityLabel={`ISO ${isoValue === 0 ? 'auto' : isoValue}`}
+                      >
+                        <Text style={[styles.isoPillText, settings.iso === isoValue && styles.isoPillTextActive]}>
+                          {isoValue === 0 ? 'Auto' : String(isoValue)}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
               ) : null}
               {rulerMode === 'zoom' ? (
                 <Ruler
@@ -402,18 +429,27 @@ export function CameraScreen() {
                 />
                 <Chip
                   icon="timer"
-                  text={settings.timerSeconds > 0 ? `${settings.timerSeconds}s` : 'TIMER'}
-                  active={settings.timerSeconds > 0}
+                  text={settings.timerSeconds > 0 ? `${settings.timerSeconds}s` : ''}
+                  active={settings.timerSeconds > 0 || rulerMode === 'timer'}
                   onPress={() => setRulerMode((m) => (m === 'timer' ? 'off' : 'timer'))}
                   accessibilityLabel="Capture timer"
                 />
                 <Chip
                   icon="speedometer"
-                  text={cam.ev === 0 ? 'EV' : `EV ${cam.ev > 0 ? '+' : ''}${cam.ev}`}
-                  active={rulerMode === 'ev' || cam.ev !== 0}
-                  onPress={() => setRulerMode((m) => (m === 'ev' ? 'off' : 'ev'))}
-                  accessibilityLabel="Exposure compensation"
+                  text={exposureChipText(cam.ev, settings.iso)}
+                  active={rulerMode === 'exposure' || cam.ev !== 0 || settings.iso > 0}
+                  onPress={() => setRulerMode((m) => (m === 'exposure' ? 'off' : 'exposure'))}
+                  accessibilityLabel="Exposure and ISO"
                 />
+                {settings.mode === 'photo' ? (
+                  <Chip
+                    icon="layers"
+                    text=""
+                    active={settings.aeb}
+                    onPress={() => patch({ aeb: !settings.aeb })}
+                    accessibilityLabel="Auto exposure bracketing"
+                  />
+                ) : null}
                 {settings.mode === 'photo' ? (
                   <Chip
                     icon="options"
@@ -445,7 +481,7 @@ export function CameraScreen() {
                 <View style={styles.spacer} />
                 <Chip
                   icon="flash"
-                  text={settings.flashMode === 'auto' ? 'Auto' : settings.flashMode === 'on' ? 'On' : 'Off'}
+                  text=""
                   active={settings.flashMode !== 'off'}
                   onPress={() => patch({ flashMode: FLASH_CYCLE[settings.flashMode] })}
                   accessibilityLabel="Flash mode"
@@ -734,6 +770,35 @@ const styles = StyleSheet.create({
     gap: spacing.s,
   },
   filterName: { alignSelf: 'center' },
+  isoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: spacing.s,
+  },
+  isoPill: {
+    height: 30,
+    paddingHorizontal: 12,
+    borderRadius: 15,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.hairline,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(22,24,27,0.85)',
+  },
+  isoPillActive: {
+    backgroundColor: colors.brass,
+    borderColor: colors.brass,
+  },
+  isoPillText: {
+    ...labelStyle,
+    color: colors.bone,
+    fontSize: 11,
+    ...monoFont,
+  },
+  isoPillTextActive: {
+    color: colors.ink,
+  },
   modeSwitch: {
     flexDirection: 'row',
     alignSelf: 'center',

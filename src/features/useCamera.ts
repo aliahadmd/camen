@@ -277,7 +277,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       // The user's own develop values — presets loaded them, the user owns them.
       const recipe = settings.develop;
       const needsDevelop =
-        evOffset !== 0 || settings.iso > 100 || settings.tone === 'hdr' ||
+        evOffset !== 0 || settings.iso > 100 || settings.develop.hdr === true ||
         Object.keys(recipe).length > 0;
       if (needsDevelop) {
         setProcessing(true);
@@ -288,7 +288,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
             developPhoto(fileUri, w, h, {}, {
               ev: evOffset,
               iso: settings.iso,
-              tone: settings.tone,
               ...recipe,
             }),
             new Promise<never>((_, reject) =>
@@ -341,7 +340,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       settings.framing,
       settings.format,
       settings.iso,
-      settings.tone,
     ],
   );
 
@@ -424,7 +422,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         preset_sub: meta.raw ? 'standard' : settings.presetSub,
         ev: meta.ev,
         iso: meta.raw ? 0 : settings.iso,
-        tone: meta.raw ? 'ldr' : settings.tone,
+        tone: meta.raw ? 'ldr' : settings.develop.hdr ? 'hdr' : 'ldr',
         aeb: meta.aeb ? 1 : 0,
         lat: coords?.lat ?? null,
         lon: coords?.lon ?? null,
@@ -450,7 +448,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       settings.preset,
       settings.presetSub,
       settings.timerSeconds,
-      settings.tone,
       showToast,
       zoomRatio,
     ],

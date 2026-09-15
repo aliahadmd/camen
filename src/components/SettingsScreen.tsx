@@ -170,58 +170,6 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
           </Pressable>
         ))}
 
-        <Text style={styles.section}>TONE & EXPOSURE</Text>
-        {(['ldr', 'hdr'] as const).map((t) => (
-          <Pressable
-            key={t}
-            onPress={() => patch({ tone: t })}
-            style={[styles.row, settings.tone === t && styles.rowActive]}
-            accessibilityRole="button"
-            accessibilityLabel={`Tone ${t}`}
-          >
-            <View style={styles.rowMain}>
-              <Text style={[styles.rowTitle, settings.tone === t && styles.rowTitleActive]}>
-                {t === 'hdr' ? 'HDR look' : 'LDR · standard'}
-              </Text>
-              <Text style={styles.rowNote}>
-                {t === 'hdr'
-                  ? 'Lifted shadows, recovered highlights'
-                  : 'Neutral, straight-out-of-camera'}
-              </Text>
-            </View>
-            {settings.tone === t ? (
-              <Ionicons name="checkmark" size={18} color={colors.brass} />
-            ) : null}
-          </Pressable>
-        ))}
-        <ToggleRow
-          title="AEB bracket"
-          note="Save −0.7 / 0 / +0.7EV variants of each shot"
-          value={settings.aeb}
-          onToggle={() => patch({ aeb: !settings.aeb })}
-        />
-        <View style={styles.isoWrap}>
-          {[0, 100, 200, 400, 800, 1600, 3200].map((isoValue) => {
-            const active = settings.iso === isoValue;
-            return (
-              <Pressable
-                key={isoValue}
-                onPress={() => patch({ iso: isoValue })}
-                style={[styles.isoPill, active && styles.isoPillActive]}
-                accessibilityRole="button"
-                accessibilityLabel={`ISO ${isoValue === 0 ? 'auto' : isoValue}`}
-              >
-                <Text style={[styles.isoPillText, active && styles.isoPillTextActive]}>
-                  {isoValue === 0 ? 'Auto' : String(isoValue)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <Text style={styles.hint}>
-          Simulated gain — up to +2 EV lift with film grain. Auto is cleanest.
-        </Text>
-
         <Text style={styles.section}>CAMERA</Text>
         <Pressable
           onPress={() => patch({ mirrorFront: !settings.mirrorFront })}
@@ -351,33 +299,6 @@ const styles = StyleSheet.create({  wrap: {
     textTransform: 'none',
     letterSpacing: 0.3,
     marginBottom: spacing.s,
-  },
-  isoWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.s,
-    marginVertical: spacing.s,
-  },
-  isoPill: {
-    height: 34,
-    paddingHorizontal: 14,
-    borderRadius: 17,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.hairline,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  isoPillActive: {
-    backgroundColor: colors.brass,
-    borderColor: colors.brass,
-  },
-  isoPillText: {
-    color: colors.bone,
-    fontSize: 12,
-    ...monoFont,
-  },
-  isoPillTextActive: {
-    color: colors.ink,
   },
   credit: {
     alignItems: 'center',

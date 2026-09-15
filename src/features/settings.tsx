@@ -41,8 +41,6 @@ export type Settings = {
   antiShake: boolean;
   /** Hold the shutter for a full-resolution burst. */
   rapidFire: boolean;
-  /** Tone style: LDR (neutral) or HDR (lifted shadows, recovered highlights). */
-  tone: 'ldr' | 'hdr';
   /** Auto-exposure bracketing: save −EV / 0 / +EV variants of each shot. */
   aeb: boolean;
   /** Simulated ISO. 0 = auto (no gain). */
@@ -74,7 +72,6 @@ export const DEFAULT_SETTINGS: Settings = {
   shutterSound: true,
   antiShake: false,
   rapidFire: true,
-  tone: 'ldr',
   aeb: false,
   iso: 0,
   preset: 'standard',
@@ -100,7 +97,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     let alive = true;
     (async () => {
       let loaded: Settings = { ...DEFAULT_SETTINGS };
-      let storedRaw: Partial<Settings> | null = null;
+      let storedRaw: (Partial<Settings> & { tone?: unknown }) | null = null;
       try {
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
         if (raw) {
@@ -116,8 +113,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       if (storedRaw && !('develop' in storedRaw)) {
         loaded.develop = presetRecipe(loaded.preset, loaded.presetSub);
       }
-      // v1.11 → v1.12: the filter system is gone; drop the stale key.
-      delete (loaded as Partial<Settings> & { filterId?: string }).filterId;
+      // v1.12 → v1.13: `tone` moved into the develop recipe as `hdr`, and the
+      // filter-era `filterId` key is stale.
+      type Legacy = Partial<Settings> & { tone?: unknown; filterId?: string };
+      if (storedRaw && (storedRaw as Legacy).tone === 'hdr') {
+        loaded.develop = { ...loaded.develop, hdr: true };
+      }
+      delete (loaded as Legacy).tone;
+      delete (loaded as Legacy).filterId;
       if (!alive) return;
       latest.current = loaded;
       setSettings(loaded);

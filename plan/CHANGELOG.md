@@ -411,3 +411,21 @@ Instrumentation (release-visible rlog) pinpointed it:
 Verified end-to-end on device: TestLookll (user preset, B&W) capture →
 archive → gallery permission → SHOTS·6 grid → detail
 "TESTLOOKLL · BACK · 2560×2560 · 1.2 MB".
+
+## 2026-09-16 — v1.13.0 — exposure moves to the dashboard, joins the preset ecosystem
+
+Design change (user-driven): the TONE & EXPOSURE section left Settings.
+
+- HDR is now a style toggle in the ADJUST panel (next to MONO) — and because
+  it lives in the develop recipe (`hdr: true`), user presets SAVE and restore
+  it like any other look.
+- EV + ISO combined into one EXPOSURE chip on the dashboard: tapping opens
+  the EV ruler (±2 EV, ¼ stops) with ISO pills (Auto/100…3200) directly
+  beneath. The chip label shows current values (e.g. `EV+0.5·400`).
+- AEB is a dashboard chip (photo mode) — a capture behavior you should see
+  armed before shooting, not a settings toggle.
+- Settings: TONE & EXPOSURE section removed (Rapid fire / Anti-shake /
+  Shutter sound / Location / Format / Framing / DEVICE remain).
+- Migration: stored `tone: 'hdr'` seeds `develop.hdr`; legacy keys stripped.
+- The preset/scene boundary is now explicit: ADJUST + presets = the saved
+  look; EXPOSURE/AEB chips = the scene.
