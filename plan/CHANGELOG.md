@@ -441,3 +441,24 @@ Design change (user-driven): the TONE & EXPOSURE section left Settings.
   container can't become the drag target and the bar won't scroll.
 - Verified on device: swipe reveals AEB → ADJUST → FLASH(AUTO/OFF); chips
   remain tappable from any scroll position; panel/pickers unaffected.
+
+## 2026-09-16 — v1.14.0 — Night mode, rebuilt
+
+The Night preset is now a real low-light combination, not just a tone label.
+expo-camera 57 exposes no hardware night/low-light API (verified in the module
+types), so the pipeline does the work:
+
+- Exposure lift +0.25…+0.35 EV — the sensor underexposes night scenes; we
+  lift it before any tone mapping
+- Shadows −0.40…−0.50 — crushed dark areas open up
+- Highlights +0.20…+0.30 — signs and streetlights are protected
+- Micro-contrast and sharpening stay LOW at night — amplifying contrast
+  amplifies noise
+- Grain 0.30…0.40 — masks lifted-shadow noise instead of removing it
+- Night split-tones per sub: City (teal/warm street), Neon (teal/magenta,
+  saturation 1.05), Moon (cool blue, max lift for the dimmest scenes)
+
+Plus a transient "NIGHT MODE" indicator on the dashboard when a Night preset
+is armed. Verified numerically: the three recipes run through the real
+applyGrade lift the dark deciles (city +4…+7, moon +2…+6 vs standard) while
+highlight strips stay protected.

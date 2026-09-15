@@ -320,6 +320,10 @@ export function CameraScreen() {
               style={[styles.labelsWrap, { top: insets.top + spacing.s + 52, right: spacing.l }]}
             >
               <FadeLabel tick={settings.grid} text={GRID_LABEL[settings.grid]} />
+              <FadeLabel
+                tick={settings.preset === 'night'}
+                text={settings.preset === 'night' ? 'NIGHT MODE' : ''}
+              />
               <FadeLabel tick={cam.zoomRatio} text={`${cam.zoomRatio.toFixed(1)}×`} mono />
               <FadeLabel tick={settings.edgeLight} text={EDGE_LABEL[settings.edgeLight] ?? ''} />
             </View>

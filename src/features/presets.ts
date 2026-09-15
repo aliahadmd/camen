@@ -106,36 +106,61 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
   {
     id: 'night',
     name: 'Night',
-    blurb: 'Shadow recovery, highlight protection, cyan shadows, warm skin, subtle grain',
+    blurb:
+      'Real night capture: exposure lift + deep shadow recovery + highlight protection, noise-masking grain. Selecting it arms the night pipeline.',
     subs: [
       { id: 'night-city', name: 'City' },
       { id: 'night-neon', name: 'Neon' },
       { id: 'night-moon', name: 'Moon' },
     ],
     recipes: {
+      // The night combination, shared direction per sub:
+      //  - exposure +0.10…+0.20 — the sensor underexposes night scenes; lift it
+      //  - shadows −0.40…−0.50 — crushed dark areas must open up
+      //  - highlights +0.20…+0.30 — signs/streetlights clip first at night
+      //  - LOW contrast + gentle sharpen — amplifying contrast/noise ruins night
+      //  - grain 0.30…0.40 — masks the lifted-shadow noise instead of removing it
+      //  - vignette — focuses the frame and hides noisiest corners
       'night-city': {
-        shadows: -0.25,
-        highlights: 0.22,
-        temperatureSplit: { shadow: [0.14, 0.24, 0.34], highlight: [0.3, 0.28, 0.22], strength: 0.4 },
-        temperature: 0.03,
-        grain: 0.3,
-        vignette: 0.12,
-      },
-      'night-neon': {
-        shadows: -0.2,
+        exposure: 0.3,
+        contrast: 0.04,
+        shadows: -0.45,
         highlights: 0.25,
-        temperatureSplit: { shadow: [0.1, 0.22, 0.36], highlight: [0.32, 0.26, 0.2], strength: 0.45 },
-        saturation: 1.04,
-        grain: 0.35,
+        temperature: 0.02,
+        temperatureSplit: { shadow: [0.12, 0.2, 0.3], highlight: [0.36, 0.27, 0.16], strength: 0.35 },
+        saturation: 0.95,
+        orangeSaturation: 0.9,
+        microContrast: 0.2,
+        sharpen: 0.18,
+        grain: 0.3,
         vignette: 0.15,
       },
-      'night-moon': {
-        shadows: -0.28,
-        highlights: 0.2,
-        temperature: -0.06,
-        temperatureSplit: { shadow: [0.12, 0.2, 0.3], highlight: [0.26, 0.3, 0.34], strength: 0.4 },
-        grain: 0.45,
+      'night-neon': {
+        exposure: 0.32,
+        contrast: 0.08,
+        shadows: -0.4,
+        highlights: 0.3,
+        temperature: -0.02,
+        temperatureSplit: { shadow: [0.15, 0.12, 0.32], highlight: [0.4, 0.18, 0.3], strength: 0.4 },
+        saturation: 1.05,
+        orangeSaturation: 0.88,
+        microContrast: 0.22,
+        sharpen: 0.2,
+        grain: 0.32,
         vignette: 0.18,
+      },
+      'night-moon': {
+        exposure: 0.35,
+        contrast: 0.02,
+        shadows: -0.5,
+        highlights: 0.2,
+        temperature: -0.08,
+        temperatureSplit: { shadow: [0.1, 0.16, 0.28], highlight: [0.24, 0.28, 0.34], strength: 0.35 },
+        saturation: 0.9,
+        microContrast: 0.15,
+        sharpen: 0.15,
+        grain: 0.4,
+        vignette: 0.2,
       },
     },
   },
