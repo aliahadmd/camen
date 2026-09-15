@@ -419,73 +419,83 @@ export function CameraScreen() {
                 />
               ) : null}
 
+              {/* control toolbar — horizontally scrollable so every chip can
+                  carry its icon + label, and new tools can be appended freely */}
               <View style={styles.chipRow} pointerEvents="box-none">
-                <Chip
-                  icon="crop"
-                  text="ZOOM"
-                  active={rulerMode === 'zoom'}
-                  onPress={() => setRulerMode((m) => (m === 'zoom' ? 'off' : 'zoom'))}
-                  accessibilityLabel="Zoom scrollbar"
-                />
-                <Chip
-                  icon="timer"
-                  text={settings.timerSeconds > 0 ? `${settings.timerSeconds}s` : ''}
-                  active={settings.timerSeconds > 0 || rulerMode === 'timer'}
-                  onPress={() => setRulerMode((m) => (m === 'timer' ? 'off' : 'timer'))}
-                  accessibilityLabel="Capture timer"
-                />
-                <Chip
-                  icon="speedometer"
-                  text={exposureChipText(cam.ev, settings.iso)}
-                  active={rulerMode === 'exposure' || cam.ev !== 0 || settings.iso > 0}
-                  onPress={() => setRulerMode((m) => (m === 'exposure' ? 'off' : 'exposure'))}
-                  accessibilityLabel="Exposure and ISO"
-                />
-                {settings.mode === 'photo' ? (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.chipRowScroll}
+                >
                   <Chip
-                    icon="layers"
-                    text=""
-                    active={settings.aeb}
-                    onPress={() => patch({ aeb: !settings.aeb })}
-                    accessibilityLabel="Auto exposure bracketing"
+                    icon="crop"
+                    text="ZOOM"
+                    active={rulerMode === 'zoom'}
+                    onPress={() => setRulerMode((m) => (m === 'zoom' ? 'off' : 'zoom'))}
+                    accessibilityLabel="Zoom scrollbar"
                   />
-                ) : null}
-                {settings.mode === 'photo' ? (
                   <Chip
-                    icon="options"
-                    text="ADJUST"
-                    active={showAdjust}
-                    onPress={() => setShowAdjust((s) => !s)}
-                    accessibilityLabel="Manual develop controls"
+                    icon="timer"
+                    text={settings.timerSeconds > 0 ? `${settings.timerSeconds}s` : 'TIMER'}
+                    active={settings.timerSeconds > 0 || rulerMode === 'timer'}
+                    onPress={() => setRulerMode((m) => (m === 'timer' ? 'off' : 'timer'))}
+                    accessibilityLabel="Capture timer"
                   />
-                ) : null}
-                {cam.processing ? (
-                  <View style={styles.devChip} pointerEvents="none">
-                    <FadeLabel text="Developing" ms={60000} showOnMount />
-                  </View>
-                ) : null}
-                {cam.steady.active ? (
-                  <View style={styles.devChip} pointerEvents="none">
-                    <FadeLabel
-                      text={cam.steady.ok ? 'Steady' : 'Hold steady'}
-                      ms={60000}
-                      showOnMount
+                  <Chip
+                    icon="speedometer"
+                    text={exposureChipText(cam.ev, settings.iso)}
+                    active={rulerMode === 'exposure' || cam.ev !== 0 || settings.iso > 0}
+                    onPress={() => setRulerMode((m) => (m === 'exposure' ? 'off' : 'exposure'))}
+                    accessibilityLabel="Exposure and ISO"
+                  />
+                  {settings.mode === 'photo' ? (
+                    <Chip
+                      icon="layers"
+                      text="AEB"
+                      active={settings.aeb}
+                      onPress={() => patch({ aeb: !settings.aeb })}
+                      accessibilityLabel="Auto exposure bracketing"
                     />
-                  </View>
-                ) : null}
-                {cam.burst.active ? (
-                  <View style={styles.devChip} pointerEvents="none">
-                    <FadeLabel text={`Rapid ×${cam.burst.count}`} ms={60000} showOnMount />
-                  </View>
-                ) : null}
-                <View style={styles.spacer} />
-                <Chip
-                  icon="flash"
-                  text=""
-                  active={settings.flashMode !== 'off'}
-                  onPress={() => patch({ flashMode: FLASH_CYCLE[settings.flashMode] })}
-                  accessibilityLabel="Flash mode"
-                />
+                  ) : null}
+                  {settings.mode === 'photo' ? (
+                    <Chip
+                      icon="options"
+                      text="ADJUST"
+                      active={showAdjust}
+                      onPress={() => setShowAdjust((s) => !s)}
+                      accessibilityLabel="Manual develop controls"
+                    />
+                  ) : null}
+                  <Chip
+                    icon="flash"
+                    text={settings.flashMode === 'auto' ? 'AUTO' : settings.flashMode === 'on' ? 'ON' : 'OFF'}
+                    active={settings.flashMode !== 'off'}
+                    onPress={() => patch({ flashMode: FLASH_CYCLE[settings.flashMode] })}
+                    accessibilityLabel="Flash mode"
+                  />
+                </ScrollView>
+                {/* status badges — centered over the toolbar, never scrolling */}
+                <View style={styles.statusOverlay} pointerEvents="none">
+                  {cam.processing ? (
+                    <View style={styles.devChip} pointerEvents="none">
+                      <FadeLabel text="Developing" ms={60000} showOnMount />
+                    </View>
+                  ) : null}
+                  {cam.steady.active ? (
+                    <View style={styles.devChip} pointerEvents="none">
+                      <FadeLabel
+                        text={cam.steady.ok ? 'Steady' : 'Hold steady'}
+                        ms={60000}
+                        showOnMount
+                      />
+                    </View>
+                  ) : null}
+                  {cam.burst.active ? (
+                    <View style={styles.devChip} pointerEvents="none">
+                      <FadeLabel text={`Rapid ×${cam.burst.count}`} ms={60000} showOnMount />
+                    </View>
+                  ) : null}
+                </View>
               </View>
 
               {cam.recording ? (
@@ -753,8 +763,21 @@ const styles = StyleSheet.create({
     gap: spacing.m,
   },
   chipRow: {
+    alignItems: 'center',
+  },
+  chipRowScroll: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: spacing.s,
+  },
+  statusOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   devChip: {
     alignSelf: 'center',

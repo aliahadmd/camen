@@ -429,3 +429,15 @@ Design change (user-driven): the TONE & EXPOSURE section left Settings.
 - Migration: stored `tone: 'hdr'` seeds `develop.hdr`; legacy keys stripped.
 - The preset/scene boundary is now explicit: ADJUST + presets = the saved
   look; EXPOSURE/AEB chips = the scene.
+
+## 2026-09-16 — v1.13.1 — scrollable control toolbar
+
+- The control row is now a horizontally scrollable navbar: every chip carries
+  its icon + full label again (TIMER shows seconds, AEB and FLASH have their
+  labels back) and new tools can be appended to the end freely.
+- Status badges (Developing / Hold steady / Rapid ×N) moved to a non-scrolling
+  overlay centered over the toolbar.
+- ScrollView pointerEvents must be auto (not box-none) — with box-none the
+  container can't become the drag target and the bar won't scroll.
+- Verified on device: swipe reveals AEB → ADJUST → FLASH(AUTO/OFF); chips
+  remain tappable from any scroll position; panel/pickers unaffected.
