@@ -101,6 +101,8 @@ export function applyGrade(
     seed?: number;
     /** Monochrome switch — applies the smooth-skin B&W channel mix. */
     bw?: boolean;
+    /** Skin-zone soft smoothing 0…1. */
+    skinSmooth?: number;
   } = {},
 ): void {
   const px = new Uint8ClampedArray(data.buffer, data.byteOffset, data.length);
@@ -190,6 +192,67 @@ export function applyGrade(
         px[i] += d;
         px[i + 1] += d;
         px[i + 2] += d;
+      }
+    }
+  }
+
+  // Pass 3.5: skin smoothing — half-res blur blended only inside the warm-skin
+  // hue zone (same heuristic as the orange-saturation control), with the zone
+  // mask itself blurred so the transition has no visible boundary.
+  const smooth = extras.skinSmooth ?? 0;
+  if (smooth > 0) {
+    const w2 = Math.max(1, w >> 1);
+    const h2 = Math.max(1, h >> 1);
+    const rs = new Uint8Array(w2 * h2);
+    const gs = new Uint8Array(w2 * h2);
+    const bs = new Uint8Array(w2 * h2);
+    const zone = new Uint8Array(w2 * h2);
+    for (let y = 0; y < h2; y++) {
+      const sy = Math.min(h - 1, y * 2);
+      for (let x = 0; x < w2; x++) {
+        const sx = Math.min(w - 1, x * 2);
+        const i = (sy * w + sx) * 4;
+        const p = y * w2 + x;
+        const r = px[i];
+        const g = px[i + 1];
+        const b = px[i + 2];
+        rs[p] = r;
+        gs[p] = g;
+        bs[p] = b;
+        zone[p] = r > g && g >= b - 13 && r - b > 25 && r > 64 ? 255 : 0;
+      }
+    }
+    const radius = Math.max(2, Math.round(Math.min(w2, h2) * 0.006 * (0.5 + smooth)));
+    const rsB = boxBlurU8(rs, w2, h2, radius);
+    const gsB = boxBlurU8(gs, w2, h2, radius);
+    const bsB = boxBlurU8(bs, w2, h2, radius);
+    const zoneB = boxBlurU8(zone, w2, h2, 3);
+    const amt = smooth * 0.65;
+    for (let y = 0; y < h; y++) {
+      const fy = Math.min(h2 - 1, y >> 1);
+      const y1 = Math.min(h2 - 1, fy + 1);
+      const wy = (y & 1) * 0.5;
+      for (let x = 0; x < w; x++) {
+        const fx = Math.min(w2 - 1, x >> 1);
+        const x1 = Math.min(w2 - 1, fx + 1);
+        const wx = (x & 1) * 0.5;
+        const zo = fy * w2 + fx;
+        const zr = fy * w2 + x1;
+        const top = zoneB[zo] * (1 - wx) + zoneB[zr] * wx;
+        const bot = zoneB[y1 * w2 + fx] * (1 - wx) + zoneB[y1 * w2 + x1] * wx;
+        const mz = ((top * (1 - wy) + bot * wy) / 255) * amt;
+        if (mz <= 0.002) continue;
+        const i4 = (y * w + x) * 4;
+        const to = zo;
+        const tr = rsB[to] * (1 - wx) + rsB[zr] * wx;
+        const tg = gsB[to] * (1 - wx) + gsB[zr] * wx;
+        const tb = bsB[to] * (1 - wx) + bsB[zr] * wx;
+        const br = rsB[y1 * w2 + fx] * (1 - wx) + rsB[y1 * w2 + x1] * wx;
+        const bg = gsB[y1 * w2 + fx] * (1 - wx) + gsB[y1 * w2 + x1] * wx;
+        const bb = bsB[y1 * w2 + fx] * (1 - wx) + bsB[y1 * w2 + x1] * wx;
+        px[i4] += ((tr * (1 - wy) + br * wy) - px[i4]) * mz;
+        px[i4 + 1] += ((tg * (1 - wy) + bg * wy) - px[i4 + 1]) * mz;
+        px[i4 + 2] += ((tb * (1 - wy) + bb * wy) - px[i4 + 2]) * mz;
       }
     }
   }
@@ -320,7 +383,8 @@ const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 const B64_LOOKUP: Record<string, number> = {};
 for (let i = 0; i < B64.length; i++) B64_LOOKUP[B64[i]] = i;
 
-function base64ToBytes(b64: string): Uint8Array {
+/** Exported for the portrait depth pipeline (same decode path). */
+export function base64ToBytes(b64: string): Uint8Array {
   const len = b64.length;
   const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
   const out = new Uint8Array(Math.floor((len / 4) * 3) - pad);
@@ -337,7 +401,8 @@ function base64ToBytes(b64: string): Uint8Array {
   return out;
 }
 
-function toBase64(bytes: Uint8Array): string {
+/** Exported for the portrait depth pipeline (same encode path). */
+export function toBase64(bytes: Uint8Array): string {
   let out = '';
   const n = bytes.length;
   for (let i = 0; i < n; i += 3) {
@@ -435,6 +500,14 @@ export type DevelopOptions = {
   splitStrength?: number;
   /** Monochrome: B&W with the smooth-skin channel mix. */
   bw?: boolean;
+  /** Portrait depth: background blur strength 0…1 (0 = off). See portraitDepth.ts. */
+  bokeh?: number;
+  /** Bokeh glow: highlight bleed into the blurred background 0…1. */
+  bokehGlow?: number;
+  /** Background tone shift −1 (darkened stage) … +1 (lifted, dreamy). */
+  bgTone?: number;
+  /** Skin-zone soft smoothing 0…1 (subtle by design). */
+  skinSmooth?: number;
 };
 
 /**
@@ -501,6 +574,7 @@ export async function developPhoto(
     splitStrength: options.splitStrength ?? options.temperatureSplit?.strength,
     seed: Math.floor(Math.random() * 4096),
     bw: options.bw,
+    skinSmooth: options.skinSmooth,
   });
   rlog('[camen] develop: grade applied');
 

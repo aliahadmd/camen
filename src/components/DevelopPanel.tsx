@@ -95,6 +95,38 @@ const ROWS: Row[] = [
     step: 0.01,
     format: (v) => `${Math.round(v * 100)}%`,
   },
+  {
+    key: 'bokeh',
+    label: 'Bokeh',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => (v <= 0 ? 'Off' : `${Math.round(v * 100)}%`),
+  },
+  {
+    key: 'bokehGlow',
+    label: 'Glow',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'bgTone',
+    label: 'BG Tone',
+    min: -1,
+    max: 1,
+    step: 0.01,
+    format: (v) => v.toFixed(2),
+  },
+  {
+    key: 'skinSmooth',
+    label: 'Smooth',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
 ];
 
 export function DevelopPanel({

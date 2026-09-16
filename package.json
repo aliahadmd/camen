@@ -1,13 +1,14 @@
 {
   "name": "camen",
-  "version": "1.13.0",
+  "version": "1.15.0",
   "private": true,
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -42,6 +43,7 @@
     "typescript": "~6.0.3"
   },
   "devDependencies": {
-    "@types/react": "~19.2.4"
+    "@types/react": "~19.2.4",
+    "patch-package": "^8.0.1"
   }
 }

@@ -43,12 +43,15 @@ import {
   saveUserPreset,
 } from '../features/userPresets';
 import { useCamera } from '../features/useCamera';
+import { apertureIndex, apertureLabel } from '../features/portraitDepth';
+import { APERTURE_STOPS, stopIndexToBokeh } from '../features/portraitMath';
 import { DevelopPanel } from './DevelopPanel';
 import { Chip, IconButton } from './Chips';
 import { CountdownRing } from './CountdownRing';
 import { EdgeLight } from './EdgeLight';
 import { FadeLabel } from './FadeLabel';
 import { FlashRing } from './FlashRing';
+import { FocusRing } from './FocusRing';
 import { Grid } from './Grid';
 import { PermissionGate } from './PermissionGate';
 import { Ruler } from './Ruler';
@@ -87,7 +90,7 @@ export function CameraScreen() {
 
   const [showShots, setShowShots] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'exposure'>('off');
+  const [rulerMode, setRulerMode] = useState<'off' | 'zoom' | 'timer' | 'exposure' | 'aperture'>('off');
   const [earPicker, setEarPicker] = useState<null | 'preset' | 'sub'>(null);
   const [showAdjust, setShowAdjust] = useState(false);
   // user-saved presets — the version bump re-reads the cached list after saves
@@ -119,18 +122,37 @@ export function CameraScreen() {
     cam.recording;
   const { railOpacity, bump } = useIdleFade(holdUI);
 
-  // double-tap on the viewfinder flips the camera (single taps just wake rails)
-  const lastTapRef = useRef(0);
-  const onTouchStart = useCallback(() => {
+  // Tap-to-focus on the viewfinder: single tap meters + locks AF/AE at the
+  // point (brass ring), double tap still flips the camera. Exclusive taps give
+  // the double-tap a ~300ms window; singles focus after it resolves.
+  const onFinderSingleTap = useCallback(
+    (x: number, y: number) => {
+      bump();
+      const s = settings ?? DEFAULT_SETTINGS;
+      const f = frameRect(getFraming(s.framing).aspect, bounds.w, bounds.h);
+      if (f.w <= 0 || f.h <= 0) return;
+      const nx = (x - f.x) / f.w;
+      const ny = (y - f.y) / f.h;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return; // letterbox tap
+      void Haptics.selectionAsync().catch(() => {});
+      cam.focusAt(nx, ny);
+    },
+    [bump, bounds, cam, settings],
+  );
+  const onFinderDoubleTap = useCallback(() => {
     bump();
-    const now = Date.now();
-    if (now - lastTapRef.current < 280) {
-      lastTapRef.current = 0;
-      if (!cam.recording) cam.switchFacing();
-    } else {
-      lastTapRef.current = now;
-    }
+    if (!cam.recording) cam.switchFacing();
   }, [bump, cam]);
+  const finderTaps = useMemo(() => {
+    const flip = Gesture.Tap()
+      .numberOfTaps(2)
+      .runOnJS(true)
+      .onEnd(() => onFinderDoubleTap());
+    const single = Gesture.Tap()
+      .runOnJS(true)
+      .onEnd((e) => onFinderSingleTap(e.x, e.y));
+    return Gesture.Exclusive(flip, single);
+  }, [onFinderDoubleTap, onFinderSingleTap]);
 
   // pinch zoom
   const zoomRef = useRef(cam.zoomRatio);
@@ -195,7 +217,6 @@ export function CameraScreen() {
       <GestureDetector gesture={pinch}>
         <View
           style={styles.fillInk}
-          onTouchStart={onTouchStart}
           onLayout={(e) =>
             setBounds({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })
           }
@@ -220,6 +241,9 @@ export function CameraScreen() {
               mirror={settings.facing === 'front' && settings.mirrorFront}
               mode={settings.mode === 'video' ? 'video' : 'picture'}
               videoQuality="1080p"
+              focusPointX={cam.focus?.x ?? 0.5}
+              focusPointY={cam.focus?.y ?? 0.5}
+              focusKey={cam.focus?.key ?? 0}
             />
           </View>
 
@@ -262,6 +286,35 @@ export function CameraScreen() {
           ))}
           </View>
           <EdgeLight level={edgeLevel} />
+
+          {/* tap-to-focus surface — covers exactly the viewfinder so letterbox
+              taps and the control rails never compete with it */}
+          <GestureDetector gesture={finderTaps}>
+            <View
+              style={{
+                position: 'absolute',
+                left: frame.x,
+                top: frame.y,
+                width: frame.w,
+                height: frame.h,
+              }}
+            />
+          </GestureDetector>
+
+          {/* focus ring under the rails — tapping it releases the AF·AE lock,
+              tapping anywhere else on the finder re-focuses */}
+          {cam.focus ? (
+            <FocusRing
+              frame={frame}
+              x={cam.focus.x}
+              y={cam.focus.y}
+              lockKey={cam.focus.key}
+              onDismiss={() => {
+                void Haptics.selectionAsync().catch(() => {});
+                cam.clearFocus();
+              }}
+            />
+          ) : null}
 
           {/* ---- control rails (auto-fade) ---- */}
           <Animated.View
@@ -326,6 +379,16 @@ export function CameraScreen() {
               />
               <FadeLabel tick={cam.zoomRatio} text={`${cam.zoomRatio.toFixed(1)}×`} mono />
               <FadeLabel tick={settings.edgeLight} text={EDGE_LABEL[settings.edgeLight] ?? ''} />
+              <FadeLabel
+                tick={cam.focus?.key ?? 0}
+                text={cam.focus ? 'AF·AE LOCK' : ''}
+                ms={2200}
+              />
+              <FadeLabel
+                tick={settings.develop.bokeh ?? 0}
+                text={(settings.develop.bokeh ?? 0) > 0 ? `PORTRAIT ${apertureLabel(settings.develop.bokeh ?? 0)}` : ''}
+                ms={2200}
+              />
             </View>
 
             {/* bottom stack */}
@@ -422,6 +485,20 @@ export function CameraScreen() {
                   stepPx={18}
                 />
               ) : null}
+              {rulerMode === 'aperture' ? (
+                <Ruler
+                  min={0}
+                  max={APERTURE_STOPS.length - 1}
+                  step={1}
+                  value={apertureIndex(settings.develop.bokeh ?? 0)}
+                  onChange={(idx) =>
+                    patch({ develop: { ...settings.develop, bokeh: stopIndexToBokeh(idx) } })
+                  }
+                  format={(idx) => `f/${APERTURE_STOPS[idx]}`}
+                  readoutPrefix="APERTURE"
+                  stepPx={34}
+                />
+              ) : null}
 
               {/* control toolbar — horizontally scrollable so every chip can
                   carry its icon + label, and new tools can be appended freely */}
@@ -452,6 +529,15 @@ export function CameraScreen() {
                     onPress={() => setRulerMode((m) => (m === 'exposure' ? 'off' : 'exposure'))}
                     accessibilityLabel="Exposure and ISO"
                   />
+                  {settings.mode === 'photo' && (settings.develop.bokeh ?? 0) > 0 ? (
+                    <Chip
+                      icon="aperture"
+                      text={apertureLabel(settings.develop.bokeh ?? 0)}
+                      active={rulerMode === 'aperture'}
+                      onPress={() => setRulerMode((m) => (m === 'aperture' ? 'off' : 'aperture'))}
+                      accessibilityLabel="Portrait aperture"
+                    />
+                  ) : null}
                   {settings.mode === 'photo' ? (
                     <Chip
                       icon="layers"

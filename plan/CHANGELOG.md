@@ -1,5 +1,34 @@
 # Camen — CHANGELOG
 
+## 1.15.0 (2026-09-16) — Real portrait mode: tap-to-focus, AF·AE lock, depth bokeh
+
+- **Tap-to-focus + focus lock**: tapping the viewfinder meters AF **and** AE at
+  the tapped point and locks it (brass ring, "AF·AE LOCK" label); tap elsewhere
+  to re-focus, tap the ring to release back to continuous AF. Double-tap still
+  flips the camera; works in photo and video. Implemented with a small
+  patch-package fix to expo-camera's Android metering (its one-shot focus was
+  hardcoded to the top-left pixel) — `patches/expo-camera+57.0.5.patch`,
+  auto-applied via `postinstall`.
+- **Depth bokeh at capture**: ML Kit selfie segmentation (new local Expo module
+  `modules/camen-vision`) produces a person mask; the develop pipeline feathers
+  it, blurs the background in two depth bands (near bg light, far bg heavy),
+  bleeds bright highlights as colored bokeh glow, and composites at full
+  resolution. Subject pixels stay untouched; if segmentation finds no usable
+  subject (or fails), the graded capture saves unblurred.
+- **APERTURE chip + f-stop ruler** (appears when bokeh is active): f/1.4–f/16
+  full stops with per-stop haptics; strength is carried in `develop`, so
+  presets, MY presets and the ADJUST panel all carry it. New ADJUST rows:
+  Bokeh, Glow, BG Tone, Smooth.
+- **Portrait preset rebuilt**: Nature/Studio/Contour now carry bokeh + glow +
+  skin smoothing; new **Stage Light** sub (f/1.4, darkened monochrome-leaning
+  background). "PORTRAIT f/x" label shows what will apply.
+- **Skin smoothing** (`skinSmooth`): subtle blur restricted to the warm-skin
+  hue zone, applied before color shaping; on by default in portrait subs.
+- AEB variants share one segmentation per capture; shots log the bokeh value
+  actually applied (`bokeh` column, guarded migration).
+- 10 Node unit tests for the depth math (`scripts/test-portrait-math.ts`);
+  typecheck clean; device verification on Redmi K80 Pro.
+
 ## 1.8.0 (2026-09-13) — Preset ears on the shutter row
 
 - **Preset ear (left of shutter)**: shows the active capture preset name; tap

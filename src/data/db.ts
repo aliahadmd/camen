@@ -32,6 +32,8 @@ export type ShotRow = {
   preset_sub: string;
   media_type: 'photo' | 'video';
   duration_ms: number | null;
+  /** Portrait depth strength used (v1.15). Null for videos/bursts/pre-bokeh shots. */
+  bokeh?: number | null;
 };
 
 export type NewShot = Omit<ShotRow, 'id'>;
@@ -93,16 +95,23 @@ for (const col of ["media_type TEXT NOT NULL DEFAULT 'photo'", 'duration_ms INTE
   }
 }
 
+// v1.15: portrait depth strength actually used for the shot (guarded)
+try {
+  db.execSync('ALTER TABLE shots ADD COLUMN bokeh REAL');
+} catch {
+  // column already exists
+}
+
 const SHOT_COLUMNS = `created_at, path, thumb_path, gallery_uri, filter_id, facing,
        width, height, size_bytes, flash_mode, zoom_ratio, timer_seconds,
        edge_light, device, framing, ev, iso, tone, aeb, lat, lon, preset_id,
-       preset_sub, media_type, duration_ms`;
+       preset_sub, media_type, duration_ms, bokeh`;
 
 export function insertShot(s: NewShot): number {
   const res = db.runSync(
     `INSERT INTO shots
        (${SHOT_COLUMNS})
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       s.created_at,
       s.path,
@@ -129,6 +138,7 @@ export function insertShot(s: NewShot): number {
       s.preset_sub,
       s.media_type,
       s.duration_ms,
+      s.bokeh ?? null,
     ],
   );
   return res.lastInsertRowId;

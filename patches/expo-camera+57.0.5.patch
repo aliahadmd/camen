@@ -1,0 +1,102 @@
+diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
+index 21382f8..0741b60 100644
+--- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
++++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/CameraViewModule.kt
+@@ -390,6 +390,18 @@ class CameraViewModule : Module() {
+         }
+       }
+ 
++      Prop("focusPointX") { view, x: Float? ->
++        view.focusPointX = x ?: 0.5f
++      }
++
++      Prop("focusPointY") { view, y: Float? ->
++        view.focusPointY = y ?: 0.5f
++      }
++
++      Prop("focusKey") { view, key: Int? ->
++        view.focusKey = key ?: 0
++      }
++
+       Prop("ratio") { view, ratio: CameraRatio? ->
+         ratio?.let {
+           if (view.ratio != it) {
+diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+index 999a22c..e70be53 100644
+--- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
++++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
+@@ -180,6 +180,27 @@ class ExpoCameraView(
+       }
+     }
+ 
++  // Normalized tap-to-focus point (0..1 of the preview view). With focusKey == 0
++  // the camera stays on continuous AF; any positive key runs a one-shot AF+AE
++  // metering at the point that locks until focusKey returns to 0.
++  var focusPointX: Float = 0.5f
++  var focusPointY: Float = 0.5f
++  var focusKey: Int = 0
++    set(value) {
++      field = value
++      // Post to the view queue so the point props from the same JS prop batch
++      // are guaranteed to be applied before metering runs.
++      post {
++        camera?.cameraControl?.let {
++          if (field == 0) {
++            it.cancelFocusAndMetering()
++          } else {
++            startFocusMetering()
++          }
++        }
++      }
++    }
++
+   var videoQuality: VideoQuality = VideoQuality.VIDEO1080P
+     set(value) {
+       field = value
+@@ -637,9 +658,14 @@ class ExpoCameraView(
+         previewView.height.toFloat()
+       )
+       val action = FocusMeteringAction.Builder(
+-        meteringPointFactory.createPoint(1f, 1f),
+-        FocusMeteringAction.FLAG_AF
++        meteringPointFactory.createPoint(
++          previewView.width * focusPointX,
++          previewView.height * focusPointY
++        ),
++        FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+       )
++        // No auto-cancel: the metering stays locked until focusKey goes back to 0.
++        .disableAutoCancel()
+         .build()
+       it.cameraControl.startFocusAndMetering(action)
+     }
+diff --git a/node_modules/expo-camera/build/Camera.types.d.ts b/node_modules/expo-camera/build/Camera.types.d.ts
+index 0ee50ec..afa0eaf 100644
+--- a/node_modules/expo-camera/build/Camera.types.d.ts
++++ b/node_modules/expo-camera/build/Camera.types.d.ts
+@@ -348,6 +348,25 @@ export type CameraViewProps = ViewProps & {
+      * @platform ios
+      */
+     autofocus?: FocusMode;
++    /**
++     * Normalized x (0..1) of the tap-to-focus point within the preview.
++     * Applied when `focusKey` changes. (Camen Android patch.)
++     * @platform android
++     */
++    focusPointX?: number;
++    /**
++     * Normalized y (0..1) of the tap-to-focus point within the preview.
++     * Applied when `focusKey` changes. (Camen Android patch.)
++     * @platform android
++     */
++    focusPointY?: number;
++    /**
++     * Monotonic counter: any positive value runs one-shot AF/AE metering at
++     * (focusPointX, focusPointY) and locks it; 0 releases back to continuous
++     * autofocus. (Camen Android patch.)
++     * @platform android
++     */
++    focusKey?: number;
+     /**
+      * A boolean that determines whether the camera should be active.
+      * Useful in situations where the camera may not have unmounted but you still want to stop the camera session.

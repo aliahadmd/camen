@@ -206,11 +206,12 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
   {
     id: 'portrait',
     name: 'Portrait',
-    blurb: 'Skin protected, background contrast, subtle sharpening, controlled highlights',
+    blurb: 'Depth bokeh on the background, skin protected, gentle glow — depth applies at capture',
     subs: [
       { id: 'portrait-nature', name: 'Nature Light' },
       { id: 'portrait-studio', name: 'Studio Light' },
       { id: 'portrait-contour', name: 'Contour Light' },
+      { id: 'portrait-stage', name: 'Stage Light' },
     ],
     recipes: {
       'portrait-nature': {
@@ -222,6 +223,9 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
         sharpen: 0.22,
         rolloff: 0.35,
         vignette: 0.08,
+        bokeh: 0.71,
+        bokehGlow: 0.3,
+        skinSmooth: 0.3,
       },
       'portrait-studio': {
         highlights: 0.2,
@@ -230,6 +234,9 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
         orangeSaturation: 0.85,
         sharpen: 0.28,
         rolloff: 0.35,
+        bokeh: 0.86,
+        bokehGlow: 0.35,
+        skinSmooth: 0.3,
       },
       'portrait-contour': {
         highlights: 0.2,
@@ -239,6 +246,22 @@ export const CAPTURE_PRESETS: CapturePreset[] = [
         sharpen: 0.3,
         rolloff: 0.35,
         vignette: 0.12,
+        bokeh: 0.9,
+        bokehGlow: 0.4,
+        bgTone: -0.15,
+        skinSmooth: 0.3,
+      },
+      'portrait-stage': {
+        highlights: 0.22,
+        contrast: 0.16,
+        orangeSaturation: 0.85,
+        sharpen: 0.28,
+        rolloff: 0.35,
+        vignette: 0.18,
+        bokeh: 1,
+        bokehGlow: 0.5,
+        bgTone: -0.65,
+        skinSmooth: 0.35,
       },
     },
   },

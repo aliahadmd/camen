@@ -17,6 +17,8 @@ import { clampRatio, type DeviceProfile } from './deviceProfile';
 import { cropToAspect, developPhoto } from './gradePhoto';
 import { getFraming } from './framings';
 import { injectGpsExif } from './geotag';
+import { applyPortraitDepth } from './portraitDepth';
+import { getSelfieMask, type DepthMask } from './vision';
 import { insertShot, latestShot } from '../data/db';
 import { queuedManipulate } from './gradePhoto';
 import { developKey, isCustomDevelop, isUserPresetId, presetRecipe } from './presets';
@@ -52,6 +54,8 @@ type CapturedFrame = {
   orientation?: number;
   /** Cache files created while processing that the caller should delete after archiving. */
   extras?: string[];
+  /** True when the portrait depth pass actually ran (logged honestly to SQLite). */
+  bokehApplied?: boolean;
 };
 
 /**
@@ -107,6 +111,23 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
   const setEv = useCallback((value: number) => {
     setEvState(Math.min(2, Math.max(-2, Math.round(value * 4) / 4)));
+  }, []);
+
+  // ---- tap-to-focus / AF·AE lock -------------------------------------------
+  // x/y are normalized to the viewfinder; key is a monotonic counter — every
+  // increment re-meters at the point and LOCKS (patched disableAutoCancel),
+  // key 0 releases back to continuous autofocus.
+  const [focus, setFocus] = useState<{ x: number; y: number; key: number } | null>(null);
+  const focusKeyRef = useRef(0);
+  const focusAt = useCallback((x: number, y: number) => {
+    const nx = Math.min(1, Math.max(0, x));
+    const ny = Math.min(1, Math.max(0, y));
+    focusKeyRef.current += 1;
+    setFocus({ x: nx, y: ny, key: focusKeyRef.current });
+  }, []);
+  const clearFocus = useCallback(() => {
+    focusKeyRef.current = 0;
+    setFocus(null);
   }, []);
 
   // ---- flash / torch ------------------------------------------------------
@@ -225,12 +246,18 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   // ---- capture pipeline -----------------------------------------------------
   /**
    * Orientation upright → framing crop → filter grade + preset recipe develop →
-   * format conversion. Every cache file created along the way that is not the
-   * returned final is listed in `extras` so the caller can reclaim the cache
-   * after archiving (the final itself is moved into the archive).
+   * portrait depth bokeh → format conversion. Every cache file created along the
+   * way that is not the returned final is listed in `extras` so the caller can
+   * reclaim the cache after archiving (the final itself is moved into the archive).
+   * `maskRef` lets AEB variants of one capture share a single segmentation —
+   * same geometry, same person.
    */
   const processCapture = useCallback(
-    async (photo: CapturedFrame, evOffset: number): Promise<CapturedFrame> => {
+    async (
+      photo: CapturedFrame,
+      evOffset: number,
+      maskRef?: { promise: Promise<DepthMask | null> | null },
+    ): Promise<CapturedFrame> => {
       const created: string[] = [];
       let fileUri = photo.uri;
       let w = photo.width;
@@ -275,10 +302,15 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
 
       // The user's own develop values — presets loaded them, the user owns them.
+      // Depth keys don't need the tonal pass (the portrait stage below handles
+      // them), so a bokeh-only develop skips straight to segmentation.
       const recipe = settings.develop;
+      const toneKeys = Object.keys(recipe).filter(
+        (k) => k !== 'bokeh' && k !== 'bokehGlow' && k !== 'bgTone',
+      );
       const needsDevelop =
         evOffset !== 0 || settings.iso > 100 || settings.develop.hdr === true ||
-        Object.keys(recipe).length > 0;
+        toneKeys.length > 0;
       if (needsDevelop) {
         setProcessing(true);
         try {
@@ -320,6 +352,47 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         }
       }
 
+      // Portrait depth bokeh — person-aware background blur carried by
+      // develop.bokeh (0 = off). Own watchdog, same policy as develop: a
+      // failure keeps the graded capture instead of losing the shot.
+      const bokeh = recipe.bokeh ?? 0;
+      let bokehApplied = false;
+      if (bokeh > 0) {
+        setProcessing(true);
+        try {
+          const provider = async () => {
+            if (!maskRef) return getSelfieMask(fileUri);
+            if (!maskRef.promise) maskRef.promise = getSelfieMask(fileUri);
+            return maskRef.promise;
+          };
+          const out = await Promise.race([
+            applyPortraitDepth(
+              fileUri,
+              provider,
+              {
+                bokeh,
+                bokehGlow: recipe.bokehGlow ?? bokeh * 0.45,
+                bgTone: recipe.bgTone ?? 0,
+              },
+            ),
+            new Promise<null>((_, reject) =>
+              setTimeout(() => reject(new Error('portrait timeout')), 45000),
+            ),
+          ]);
+          if (out) {
+            created.push(out.uri);
+            fileUri = out.uri;
+            w = out.width;
+            h = out.height;
+            bokehApplied = true;
+          }
+        } catch (e) {
+          rlog('[camen] portrait depth failed, keeping graded capture:', e);
+        } finally {
+          setProcessing(false);
+        }
+      }
+
       if (settings.format === 'webp') {
         try {
           const converted = await ImageManipulator.manipulateAsync(fileUri, [], {
@@ -333,14 +406,15 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         }
       }
 
-      return { uri: fileUri, width: w, height: h, extras: created.filter((u) => u !== fileUri) };
+      return {
+        uri: fileUri,
+        width: w,
+        height: h,
+        extras: created.filter((u) => u !== fileUri),
+        bokehApplied,
+      };
     },
-    [
-      settings.develop,
-      settings.framing,
-      settings.format,
-      settings.iso,
-    ],
+    [settings.develop, settings.framing, settings.format, settings.iso],
   );
 
   /** Archive → EXIF GPS → thumb → gallery export → SQLite row. */
@@ -428,6 +502,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         lon: coords?.lon ?? null,
         media_type: media.mediaType,
         duration_ms: media.durationMs ?? null,
+        bokeh: meta.raw ? null : shot.bokehApplied ? settings.develop.bokeh ?? null : null,
       });
 
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -553,13 +628,15 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
       // Process the main shot AND every AEB variant BEFORE archiving anything —
       // archiving moves cache files, which would starve the remaining variants.
+      // All variants share one segmentation (identical geometry).
+      const sharedMask: { promise: Promise<DepthMask | null> | null } = { promise: null };
       const results: { shot: CapturedFrame; meta: { ev: number; aeb: boolean } }[] = [];
-      results.push({ shot: await processCapture(frame, ev), meta: { ev, aeb: false } });
+      results.push({ shot: await processCapture(frame, ev, sharedMask), meta: { ev, aeb: false } });
       if (settings.aeb) {
         for (const bracket of [-0.7, 0.7]) {
           try {
             results.push({
-              shot: await processCapture(frame, ev + bracket),
+              shot: await processCapture(frame, ev + bracket, sharedMask),
               meta: { ev: ev + bracket, aeb: true },
             });
           } catch (e) {
@@ -666,9 +743,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     const next = facing === 'back' ? 'front' : 'back';
     if (next === 'front' ? !profile.hasFront : !profile.hasBack) return;
     if (intervalRef.current) cancelCountdown();
+    clearFocus(); // a focus lock on the old lens means nothing on the new one
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     patch({ facing: next });
-  }, [cancelCountdown, facing, patch, profile]);
+  }, [cancelCountdown, clearFocus, facing, patch, profile]);
 
   // ---- rapid fire ------------------------------------------------------------
   const startBurst = useCallback(() => {
@@ -918,6 +996,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     setEv,
     burst,
     steady,
+    focus,
+    focusAt,
+    clearFocus,
     recording,
     recordSeconds,
     startRecording,
