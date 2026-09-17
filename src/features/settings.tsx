@@ -11,6 +11,9 @@ import {
 
 import type { DevelopOptions } from './gradePhoto';
 import { presetRecipe } from './presets';
+import { loadSettingsValue } from './settingsValidation';
+import { refreshUserPresets } from './userPresets';
+import { rlog } from '../log';
 
 export type GridMode = 'off' | 'thirds' | 'golden';
 export type FlashSetting = 'auto' | 'on' | 'off';
@@ -96,31 +99,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      let loaded: Settings = { ...DEFAULT_SETTINGS };
-      let storedRaw: (Partial<Settings> & { tone?: unknown }) | null = null;
+      let loaded = { ...DEFAULT_SETTINGS };
       try {
+        await refreshUserPresets();
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
-        if (raw) {
-          storedRaw = JSON.parse(raw) as Partial<Settings>;
-          loaded = { ...loaded, ...storedRaw };
-        }
-      } catch {
-        // corrupted store — fall back to defaults
+        loaded = loadSettingsValue(raw ? JSON.parse(raw) : null, DEFAULT_SETTINGS, presetRecipe);
+      } catch (error) {
+        rlog('[camen] settings load failed, using defaults:', error);
       }
-      // v1.10 → v1.11 migration: settings saved before `develop` existed keep
-      // their chosen look by seeding the panel from the stored preset. (Check
-      // the STORED object — the merged one already carries the {} default.)
-      if (storedRaw && !('develop' in storedRaw)) {
-        loaded.develop = presetRecipe(loaded.preset, loaded.presetSub);
-      }
-      // v1.12 → v1.13: `tone` moved into the develop recipe as `hdr`, and the
-      // filter-era `filterId` key is stale.
-      type Legacy = Partial<Settings> & { tone?: unknown; filterId?: string };
-      if (storedRaw && (storedRaw as Legacy).tone === 'hdr') {
-        loaded.develop = { ...loaded.develop, hdr: true };
-      }
-      delete (loaded as Legacy).tone;
-      delete (loaded as Legacy).filterId;
       if (!alive) return;
       latest.current = loaded;
       setSettings(loaded);
@@ -134,12 +120,15 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const patch = useCallback((partial: Partial<Settings>) => {
     const base = latest.current;
     if (!base) return;
-    const next = { ...base, ...partial };
+    const next = loadSettingsValue({ ...base, ...partial }, DEFAULT_SETTINGS, presetRecipe);
     latest.current = next;
     setSettings(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch((e) => {
+        // Silent persistence failures made settings lie between launches.
+        rlog('[camen] settings persist failed:', e);
+      });
     }, 300);
   }, []);
 

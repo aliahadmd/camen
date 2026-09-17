@@ -1,24 +1,32 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { permissionAction } from '../features/cameraMath';
 
 import { colors, label as labelStyle, spacing } from '../theme';
 
 /** Minimal permission screen: one line, one action. No nag loops. */
 export function PermissionGate({
   onEnable,
+  canAskAgain = true,
 }: {
   onEnable: () => void;
+  canAskAgain?: boolean;
 }) {
+  const label = canAskAgain ? 'Enable camera' : 'Open Settings';
+  const enable = () => {
+    if (permissionAction(canAskAgain) === 'request') onEnable();
+    else void Linking.openSettings().catch(() => Alert.alert('Open app settings', 'Enable Camera permission in Android Settings.'));
+  };
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>CAMEN</Text>
       <Text style={styles.body}>Camen needs the camera to take photos.</Text>
       <Pressable
-        onPress={onEnable}
+        onPress={enable}
         accessibilityRole="button"
-        accessibilityLabel="Enable camera"
+        accessibilityLabel={label}
         style={styles.button}
       >
-        <Text style={styles.buttonText}>Enable camera</Text>
+        <Text style={styles.buttonText}>{label}</Text>
       </Pressable>
     </View>
   );

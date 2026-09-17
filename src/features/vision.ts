@@ -1,7 +1,6 @@
 import { rlog } from '../log';
-
-/** Person-confidence mask at the decoded bitmap's resolution. */
-export type DepthMask = { width: number; height: number; data: Float32Array };
+import { decodeNativeMask, type DepthMask } from './visionMask';
+export type { DepthMask } from './visionMask';
 
 type NativeSegmentResult = { width: number; height: number; mask: Uint8Array };
 type NativeVision = { segmentSelfie(uri: string, rawSizeMask: boolean): Promise<NativeSegmentResult> };
@@ -30,12 +29,13 @@ export async function getSelfieMask(uri: string): Promise<DepthMask | null> {
   const mod = loadNative();
   if (!mod) return null;
   const res = await mod.segmentSelfie(uri, true);
-  // Little-endian float32 confidences arrive as bytes; view them as floats,
-  // copying only if the backing buffer is misaligned (defensive — it never is).
-  const bytes = res.mask;
-  const data =
-    bytes.byteOffset % 4 === 0
-      ? new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 2)
-      : new Float32Array(new Uint8Array(bytes).buffer);
-  return { width: res.width, height: res.height, data };
+  // The bridge result is untrusted: validate shape/length/confidences before it
+  // reaches the portrait pipeline (audit: "settings and native-mask results
+  // lack shape/length validation").
+  try {
+    return decodeNativeMask(res);
+  } catch (e) {
+    rlog('[camen] invalid segmentation payload:', e);
+    return null;
+  }
 }

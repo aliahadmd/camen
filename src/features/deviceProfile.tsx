@@ -1,6 +1,8 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 
 import { Camera } from 'expo-camera';
+import { K80_ZOOM_RANGES, type ZoomRanges } from './cameraMath';
+export { clampRatio, ratioToNormalized, normalizedToRatio, zoomRangeForFacing } from './cameraMath';
 
 /**
  * What the connected phone can actually do. Static facts come from the adb dump
@@ -13,6 +15,8 @@ export type DeviceProfile = {
   frontFlash: 'screen' | 'none';
   /** Real zoom ratio stops offered as UI presets (back camera). */
   zoomStops: number[];
+  zoomRanges: ZoomRanges;
+  /** Rear aliases retained for older consumers; active controls use zoomRanges. */
   zoomMinRatio: number;
   zoomMaxRatio: number;
   /** Max capture resolution [w, h] per facing, from the HAL probe. */
@@ -28,6 +32,7 @@ export const REDMI_K80_PRO: DeviceProfile = {
   backFlash: 'led',
   frontFlash: 'screen',
   zoomStops: [0.6, 1, 2.5, 10],
+  zoomRanges: K80_ZOOM_RANGES,
   zoomMinRatio: 0.6,
   zoomMaxRatio: 10,
   verified: false,
@@ -41,6 +46,10 @@ export const FALLBACK_PROFILE: DeviceProfile = {
   backFlash: 'led',
   frontFlash: 'screen',
   zoomStops: [1],
+  zoomRanges: {
+    back: { zoomMinRatio: 1, zoomMaxRatio: 1 },
+    front: { zoomMinRatio: 1, zoomMaxRatio: 1 },
+  },
   zoomMinRatio: 1,
   zoomMaxRatio: 1,
   verified: false,
@@ -76,18 +85,6 @@ export async function probeDeviceProfile(): Promise<DeviceProfile> {
     return { ...REDMI_K80_PRO };
   }
 }
-
-export const clampRatio = (p: DeviceProfile, r: number): number =>
-  Math.min(p.zoomMaxRatio, Math.max(p.zoomMinRatio, r));
-
-/** Expo's `zoom` prop is normalized 0…1 across the device range — convert. */
-export const ratioToNormalized = (p: DeviceProfile, r: number): number => {
-  const span = p.zoomMaxRatio - p.zoomMinRatio;
-  return span > 0 ? (clampRatio(p, r) - p.zoomMinRatio) / span : 0;
-};
-
-export const normalizedToRatio = (p: DeviceProfile, z: number): number =>
-  p.zoomMinRatio + Math.min(1, Math.max(0, z)) * (p.zoomMaxRatio - p.zoomMinRatio);
 
 const Ctx = createContext<DeviceProfile>(REDMI_K80_PRO);
 

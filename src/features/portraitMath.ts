@@ -239,9 +239,13 @@ export function compositePortrait(
   for (let i = 0; i < n; i++) {
     const prox = proximity[i];
     const inv = 1 - prox;
-    bgR[i] = near.r[i] * inv + far.r[i] * prox;
-    bgG[i] = near.g[i] * inv + far.g[i] * prox;
-    bgB[i] = near.b[i] * inv + far.b[i] * prox;
+    // proximity runs HIGH next to the subject and LOW far away — so near the
+    // subject the lightly-blurred band dominates, and the deep blur takes over
+    // with distance. (The coefficients used to be reversed: far corners got
+    // the near band and the area hugging the subject was smeared.)
+    bgR[i] = near.r[i] * prox + far.r[i] * inv;
+    bgG[i] = near.g[i] * prox + far.g[i] * inv;
+    bgB[i] = near.b[i] * prox + far.b[i] * inv;
     if (useGlow) {
       bgR[i] += glow!.r[i] * glowAmount;
       bgG[i] += glow!.g[i] * glowAmount;

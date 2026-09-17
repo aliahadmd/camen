@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import jpeg from 'jpeg-js';
 
+import type { ArtifactScope } from './processingRuntime';
 import { rlog } from '../log';
 import { base64ToBytes, toBase64 } from './gradePhoto';
 import {
@@ -43,15 +44,18 @@ export async function applyPortraitDepth(
   fileUri: string,
   maskProvider: () => Promise<DepthMask | null>,
   opts: PortraitDepthOptions,
+  scope?: ArtifactScope,
 ): Promise<{ uri: string; width: number; height: number } | null> {
   rlog('[camen] portrait: fetching mask');
   const mask = await maskProvider();
+  scope?.assertOpen();
   if (!mask) return null;
 
   // Read + decode the developed frame (same plumbing as developPhoto).
   const b64 = await FileSystem.readAsStringAsync(fileUri, {
     encoding: FileSystem.EncodingType.Base64,
   });
+  scope?.assertOpen();
   const raw = jpeg.decode(base64ToBytes(b64), { useTArray: true });
   const w = raw.width;
   const h = raw.height;
@@ -98,6 +102,8 @@ export async function applyPortraitDepth(
   const cacheDir = FileSystem.cacheDirectory;
   if (!cacheDir) throw new Error('no cache directory');
   const outUri = `${cacheDir}camen_portrait_${Date.now()}.jpg`;
+  scope?.assertOpen();
+  scope?.track(outUri);
   await FileSystem.writeAsStringAsync(outUri, toBase64(out.data), {
     encoding: FileSystem.EncodingType.Base64,
   });

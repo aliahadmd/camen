@@ -1,0 +1,19 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.camen'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.camenvision"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  api 'com.google.mlkit:segmentation-selfie:16.0.0-beta6'
+}

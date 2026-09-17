@@ -11,7 +11,6 @@ import {
 
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
 import type { DevelopOptions } from '../features/gradePhoto';
-import { presetRecipe } from '../features/presets';
 
 /**
  * ADJUST — the manual develop controls. These are the REAL values the develop
@@ -129,18 +128,27 @@ const ROWS: Row[] = [
   },
 ];
 
+/**
+ * Slider position when a key is absent from the develop object. Multipliers
+ * are neutral at 1, not 0 — an unset saturation used to display 0% while the
+ * develop pass actually rendered 100%.
+ */
+const NEUTRAL: Partial<Record<keyof DevelopOptions, number>> = {
+  saturation: 1,
+  orangeSaturation: 1,
+};
+
 export function DevelopPanel({
   develop,
-  presetId,
-  presetSub,
   onChange,
+  onReset,
   onClose,
   onSavePreset,
 }: {
   develop: DevelopOptions;
-  presetId: string;
-  presetSub: string;
   onChange: (patch: Partial<DevelopOptions>) => void;
+  /** Resets to the active preset's recipe — a REPLACE, not a merge. */
+  onReset: () => void;
   onClose: () => void;
   onSavePreset?: (name: string) => void;
 }) {
@@ -159,7 +167,7 @@ export function DevelopPanel({
         <View style={styles.header}>
           <Text style={styles.title}>ADJUST</Text>
           <Pressable
-            onPress={() => onChange({ ...presetRecipe(presetId, presetSub) })}
+            onPress={onReset}
             accessibilityRole="button"
             accessibilityLabel="Reset to preset"
           >
@@ -192,7 +200,8 @@ export function DevelopPanel({
             </Pressable>
           </View>
           {ROWS.map((row) => {
-            const value = (develop[row.key] as number | undefined) ?? 0;
+            const value =
+              (develop[row.key] as number | undefined) ?? NEUTRAL[row.key] ?? 0;
             return (
               <View key={row.key} style={styles.row}>
                 <Text style={styles.rowLabel}>{row.label}</Text>

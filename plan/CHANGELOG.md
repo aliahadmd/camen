@@ -1,5 +1,36 @@
 # Camen — CHANGELOG
 
+## 1.16.0 (2026-09-17) — Audit-fix pass (recovery, permissions, build config)
+
+- **Crash-safe archive**: every save now journals intent before pixels move
+  (`src/features/mediaRepository.ts`), recovers staged/archived/indexed saves on
+  next launch, never promotes partial staging copies, and gates the legacy
+  orphan scan on journal ownership — a transient DB failure can no longer
+  strand an unindexed photo or displace its metadata.
+- **GPS regression fixed**: GPS EXIF is written to a scoped copy before
+  archiving (pure helper `src/features/gpsExif.ts` + Node round-trip tests);
+  coordinates survive hemispheres, rounding carry, and EXIF/pixel preservation.
+- **Processing runtime**: bounded deadlines (`withDeadline`), serialized native
+  queue with stall detection (`ProcessingQueue`), and artifact scopes that sweep
+  every intermediate including late outputs (`ArtifactScope`); thumbnails own
+  their cleanup and always produce `.jpg`.
+- **Settings/preset integrity**: validated hydration (`settingsValidation.ts`,
+  `developValidation.ts`), serialized preset store with collision-safe IDs and
+  no cache mutation on failed writes (`presetStore.ts`).
+- **Camera contracts**: countdown shows seconds not milliseconds, per-facing
+  zoom ranges (front 1–10, rear 0.6–10) with hydration-safe restore, half-tick
+  ruler padding fix, photo-only rulers/veils in video mode, honest FOCUS /
+  METERING label, permanent-denial Settings route (`PermissionGate`).
+- **Build config**: `plugins/withCamenRelease.cjs` pins NDK 27.2.12479018,
+  provisions release signing only from external `CAMEN_RELEASE_*` properties,
+  preserves the existing keystore, and fails any release task without complete
+  credentials (verified against real AGP 8.12.0); `allowBackup=false`,
+  blockedPermissions, `buildFromSource: ["expo-camera"]` for the patch.
+- **Dependencies**: direct `expo-modules-core`, uuid override resolved
+  (audit now reports 0 vulnerabilities), `npm test` runs all suites via
+  `scripts/run-tests.cjs`; 50+ new Node tests across contracts, recovery,
+  GPS, processing, settings, and build config.
+
 ## 1.15.0 (2026-09-16) — Real portrait mode: tap-to-focus, AF·AE lock, depth bokeh
 
 - **Tap-to-focus + focus lock**: tapping the viewfinder meters AF **and** AE at

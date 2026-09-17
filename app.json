@@ -2,7 +2,7 @@
   "expo": {
     "name": "Camen",
     "slug": "camen",
-    "version": "1.15.0",
+    "version": "1.16.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0C0E",
@@ -35,7 +35,15 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochrome": "./assets/monochrome.png",
         "backgroundColor": "#0B0C0E"
-      }
+      },
+      "versionCode": 16,
+      "allowBackup": false,
+      "blockedPermissions": [
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WRITE_SETTINGS",
+        "android.permission.ACTIVITY_RECOGNITION"
+      ]
     },
     "plugins": [
       "expo-status-bar",
@@ -52,7 +60,8 @@
           "locationWhenInUsePermission": "Camen uses your location to tag photos when Location is enabled."
         }
       ],
-      "expo-sqlite"
+      "expo-sqlite",
+      "./plugins/withCamenRelease.cjs"
     ]
   }
 }

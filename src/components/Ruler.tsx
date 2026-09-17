@@ -2,6 +2,7 @@ import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { rulerPadding } from '../features/cameraMath';
 import { colors, monoFont, spacing } from '../theme';
 
 /**
@@ -27,7 +28,7 @@ export function Ruler({
   step: number;
   value: number;
   onChange: (v: number) => void;
-  onCommit?: () => void;
+  onCommit?: (value: number) => void;
   format: (v: number) => string;
   stepPx?: number;
   readoutPrefix?: string;
@@ -38,6 +39,9 @@ export function Ruler({
   const lastHaptic = useRef(0);
   const scrollRef = useRef<ScrollView | null>(null);
   const scrollX = useRef(0);
+  const interacting = useRef(false);
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const ticks = useMemo(() => {
     const list: number[] = [];
@@ -52,10 +56,10 @@ export function Ruler({
   // gesture (pills, camera switch, capture reset). Small deltas are the
   // user's own scroll — never fight the finger.
   useEffect(() => {
-    if (width <= 0) return;
+    if (width <= 0 || interacting.current) return;
     const idx = Math.round((value - min) / step);
     const target = idx * stepPx;
-    if (Math.abs(scrollX.current - target) > stepPx * 1.5) {
+    if (Math.abs(scrollX.current - target) > 0.5) {
       scrollRef.current?.scrollTo({ x: target, animated: false });
       scrollX.current = target;
       lastTick.current = idx;
@@ -70,7 +74,7 @@ export function Ruler({
     if (i !== lastTick.current) {
       lastTick.current = i;
       const v = ticks[Math.min(ticks.length - 1, Math.max(0, i))];
-      if (v != null) onChange(v);
+      if (v != null) { valueRef.current = v; onChange(v); }
       const now = Date.now();
       if (now - lastHaptic.current > 60) {
         lastHaptic.current = now;
@@ -96,10 +100,12 @@ export function Ruler({
           decelerationRate="fast"
           snapToInterval={stepPx}
           onScroll={(e) => onScroll(e.nativeEvent.contentOffset.x)}
-          onScrollEndDrag={onCommit}
-          onMomentumScrollEnd={onCommit}
+          onScrollBeginDrag={() => { interacting.current = true; }}
+          onScrollEndDrag={() => { interacting.current = false; onCommit?.(valueRef.current); }}
+          onMomentumScrollBegin={() => { interacting.current = true; }}
+          onMomentumScrollEnd={() => { interacting.current = false; onCommit?.(valueRef.current); }}
           onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
-          contentContainerStyle={{ paddingHorizontal: width / 2, alignItems: 'flex-start' }}
+          contentContainerStyle={{ paddingHorizontal: rulerPadding(width, stepPx), alignItems: 'flex-start' }}
         >
           {ticks.map((v, i) => (
             <View key={i} style={[styles.tick, { width: stepPx }]}>

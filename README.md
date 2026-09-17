@@ -17,8 +17,8 @@ zoom stops, flash hardware, and sensor limits are probed and hardcoded to this p
 - **Capture presets** — Standard, Natural, Masculine (Iron/Steel/Forge), Night
   (City/Neon/Moon), Cinematic (Teal/Indie/Noir), Portrait — baked at develop time
   (split-toning, micro-contrast, film grain, vignette, highlight rolloff)
-- **Men's filter carousel** — None/Natural/Cinematic/Film/Classic/Onyx/Graphite,
-  graded per-pixel on the saved photo
+- **Men's filter carousel** — removed in v1.12; the capture presets and the
+  ADJUST panel are the whole look system now
 - **Named framings** — Full, Instagram 4:5, Square, Story 9:16, WeChat 4:3, Wide
   16:9; the viewfinder masks to the framing and the shot is center-cropped
 - **Pro capture** — EV ruler (±2 EV in ¼ stops), anti-shake steady-wait, rapid
@@ -34,15 +34,19 @@ zoom stops, flash hardware, and sensor limits are probed and hardcoded to this p
 
 ## Install (no Play Store)
 
-Download `Camen-v1.9.0.apk` from [Releases](../../releases), open it on your
-phone, and allow "Install unknown apps" when prompted. The APK is signed — keep
-installing newer releases over it.
+Grab the newest `Camen-vX.Y.Z.apk` from [Releases](../../releases), open it on
+your phone, and allow "Install unknown apps" when prompted. The APK is signed —
+keep installing newer releases over it.
 
 ## Build it yourself
 
+**Note:** the native portrait features (tap-to-focus/AF·AE lock, ML Kit depth
+bokeh) need a real build — Expo Go cannot run the patched expo-camera or the
+local `modules/camen-vision` module.
+
 ```bash
 npm install
-npx expo start          # develop in Expo Go
+npx expo start          # JS-only development (no portrait/focus patches)
 ```
 
 Release APK (local signing):

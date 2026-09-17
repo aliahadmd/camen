@@ -2,7 +2,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImageManipulator from 'expo-image-manipulator';
 import jpeg from 'jpeg-js';
 
-import { dlog, rlog } from '../log';
+import { rlog } from '../log';
+import { ArtifactScope, ProcessingQueue } from './processingRuntime';
 
 /** Cap the developed image's long edge — keeps JS processing in the 2–4s range. */
 const MAX_DIM = 2560;
@@ -34,11 +35,10 @@ export type PhotoGrade = {
   grain?: number;
 };
 
-// ImageManipulator's native render context rejects concurrent calls ("Call to
-// function 'Context.renderAsync' has been rejected") when several run back to
-// back — AEB bursts + thumbnails hit exactly that. All manipulator work is
-// serialized through this chain, with one delayed retry as a belt-and-braces.
-let manipChain: Promise<unknown> = Promise.resolve();
+// A timed-out native call retains its queue slot until it actually settles.
+const manipulatorQueue = new ProcessingQueue(15000);
+
+const MANIP_MAX_RETRIES = 2;
 
 function isManipRace(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e ?? '');
@@ -46,18 +46,16 @@ function isManipRace(e: unknown): boolean {
 }
 
 export function queuedManipulate<T>(job: () => Promise<T>): Promise<T> {
-  const run = manipChain.then(job, job);
-  manipChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  rlog('[camen] manip: queued');
-  return run.catch(async (e: unknown) => {
-    if (!isManipRace(e)) throw e;
-    rlog('[camen] manip: race detected, retrying once');
+  return manipulatorQueue.run(() => runQueued(job, MANIP_MAX_RETRIES));
+}
+
+function runQueued<T>(job: () => Promise<T>, retriesLeft: number): Promise<T> {
+  return Promise.resolve().then(job).catch(async (e: unknown) => {
+    if (!isManipRace(e) || retriesLeft <= 0) throw e;
+    rlog('[camen] manip: race detected, retrying (', retriesLeft, 'left)');
     await new Promise((r) => setTimeout(r, 180));
     // Retry inside the chain so it stays serialized.
-    return queuedManipulate(job);
+    return runQueued(job, retriesLeft - 1);
   });
 }
 
@@ -330,9 +328,10 @@ export function applyGrade(
     }
 
     if (grade.grain) {
+      // Sin is already zero-centered — subtracting 0.5 here biased every grain
+      // frame darker. Zero-mean noise, same peak amplitude as before.
       const n =
-        (Math.sin((p % w) * 12.9898 + (p / w | 0) * 78.233 + grainSeed) - 0.5) *
-        grade.grain * 0.12;
+        Math.sin((p % w) * 12.9898 + ((p / w) | 0) * 78.233 + grainSeed) * grade.grain * 0.06;
       r += n;
       g += n;
       b += n;
@@ -426,6 +425,7 @@ export async function cropToAspect(
   height: number,
   aspect: number | null,
   maxLongEdge?: number,
+  scope?: ArtifactScope,
 ): Promise<{ uri: string; width: number; height: number }> {
   if (!aspect || width <= 0 || height <= 0) {
     return { uri, width, height };
@@ -458,12 +458,15 @@ export async function cropToAspect(
         : { resize: { height: maxLongEdge } },
     );
   }
-  return queuedManipulate(() =>
-    ImageManipulator.manipulateAsync(uri, actions, {
+  const job = async () => {
+    const out = await ImageManipulator.manipulateAsync(uri, actions, {
       compress: 0.95,
       format: ImageManipulator.SaveFormat.JPEG,
-    }),
-  ).then((out) => ({ uri: out.uri, width: out.width, height: out.height }));
+    });
+    scope?.track(out.uri);
+    return { uri: out.uri, width: out.width, height: out.height };
+  };
+  return queuedManipulate(() => scope ? scope.run(job) : job());
 }
 
 /** Develop-time capture options: EV/ISO/HDR + capture-preset tonal recipe. */
@@ -520,18 +523,22 @@ export async function developPhoto(
   srcHeight: number,
   grade: PhotoGrade,
   options: DevelopOptions = {},
+  scope?: ArtifactScope,
 ): Promise<{ uri: string; width: number; height: number }> {
   // 1. Downscale natively when the sensor output exceeds the processing cap.
   let uri = sourceUri;
   if (Math.max(srcWidth, srcHeight) > MAX_DIM) {
     const action =
       srcWidth >= srcHeight ? { resize: { width: MAX_DIM } } : { resize: { height: MAX_DIM } };
-    const resized = await queuedManipulate(() =>
-      ImageManipulator.manipulateAsync(sourceUri, [action], {
-        compress: 0.95,
-        format: ImageManipulator.SaveFormat.JPEG,
-      }),
-    );
+    const resize = async () => {
+      const out = await ImageManipulator.manipulateAsync(sourceUri, [action], {
+        compress: 0.95, format: ImageManipulator.SaveFormat.JPEG,
+      });
+      scope?.track(out.uri);
+      return out;
+    };
+    const resized = await queuedManipulate(() => scope ? scope.run(resize) : resize());
+    scope?.assertOpen();
     uri = resized.uri;
   }
 
@@ -541,9 +548,16 @@ export async function developPhoto(
   const b64 = await FileSystem.readAsStringAsync(uri, {
     encoding: FileSystem.EncodingType.Base64,
   });
+  scope?.assertOpen();
   rlog('[camen] develop: decoding jpeg');
   const raw = jpeg.decode(base64ToBytes(b64), { useTArray: true });
   rlog('[camen] develop: decoded', raw.width, 'x', raw.height);
+  if (uri !== sourceUri) {
+    // The downscaled intermediate was only needed for the read above — reclaim
+    // it now instead of leaking a full-size JPEG into the cache per develop
+    // (AEB alone would strand three of them per shutter press).
+    void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+  }
 
   // 3. Grade in place, with EV / simulated-ISO / HDR tone folded into the grade,
   //    plus the capture-preset tonal recipe (exposure/contrast/shadows/split/…).
@@ -585,6 +599,8 @@ export async function developPhoto(
   const cacheDir = FileSystem.cacheDirectory;
   if (!cacheDir) throw new Error('no cache directory');
   const outUri = `${cacheDir}camen_developed_${Date.now()}.jpg`;
+  scope?.assertOpen();
+  scope?.track(outUri);
   await FileSystem.writeAsStringAsync(outUri, toBase64(out.data), {
     encoding: FileSystem.EncodingType.Base64,
   });

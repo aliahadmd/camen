@@ -1,5 +1,4 @@
 import { Camera, CameraView, type FlashMode } from 'expo-camera';
-import * as Brightness from 'expo-brightness';
 import * as Haptics from 'expo-haptics';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as KeepAwake from 'expo-keep-awake';
@@ -13,17 +12,20 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { clampRatio, type DeviceProfile } from './deviceProfile';
+import { clampRatio, zoomRangeForFacing, type DeviceProfile } from './deviceProfile';
 import { cropToAspect, developPhoto } from './gradePhoto';
 import { getFraming } from './framings';
 import { injectGpsExif } from './geotag';
 import { applyPortraitDepth } from './portraitDepth';
 import { getSelfieMask, type DepthMask } from './vision';
-import { insertShot, latestShot } from '../data/db';
+import { latestShot } from '../data/db';
 import { queuedManipulate } from './gradePhoto';
 import { developKey, isCustomDevelop, isUserPresetId, presetRecipe } from './presets';
-import { dlog, rlog } from '../log';
+import { rlog } from '../log';
 import type { Settings } from './settings';
+import { getDefaultMediaRepository } from './mediaRepository';
+import { hasEffectiveDevelop } from './developValidation';
+import { ArtifactScope, withDeadline } from './processingRuntime';
 
 export type Phase = 'ready' | 'capturing' | 'saving' | 'recording';
 export type RingMode = 'idle' | 'fill' | 'breath' | 'firing';
@@ -54,6 +56,7 @@ type CapturedFrame = {
   orientation?: number;
   /** Cache files created while processing that the caller should delete after archiving. */
   extras?: string[];
+  dispose?: () => Promise<void>;
   /** True when the portrait depth pass actually ran (logged honestly to SQLite). */
   bokehApplied?: boolean;
 };
@@ -87,27 +90,27 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
   const facing = settings.facing;
 
-  // ---- zoom -------------------------------------------------------------
+  const zoomRange = zoomRangeForFacing(profile, facing);
   const [zoomRatio, setZoomRatioState] = useState(() =>
-    settings.facing === 'front' ? 1 : settings.zoomBackRatio,
+    clampRatio(zoomRange, facing === 'front' ? 1 : settings.zoomBackRatio),
   );
-
+  const zoomRatioRef = useRef(zoomRatio);
   useEffect(() => {
-    // Reset sensibly on lens switch: front is fixed 1x, back restores its last value.
-    setZoomRatioState(facing === 'front' ? 1 : settings.zoomBackRatio);
+    const ratio = clampRatio(zoomRange, facing === 'front' ? 1 : settings.zoomBackRatio);
+    zoomRatioRef.current = ratio;
+    setZoomRatioState(ratio);
+    // Only restore when switching lenses; live gestures own the current value.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facing]);
 
-  const setZoomRatio = useCallback(
-    (ratio: number) => {
-      setZoomRatioState(clampRatio(profile, ratio));
-    },
-    [profile],
-  );
+  const setZoomRatio = useCallback((ratio: number) => {
+    zoomRatioRef.current = clampRatio(zoomRange, ratio);
+    setZoomRatioState(zoomRatioRef.current);
+  }, [zoomRange]);
 
-  const commitZoom = useCallback(() => {
-    if (facing === 'back') patch({ zoomBackRatio: clampRatio(profile, zoomRatio) });
-  }, [facing, patch, profile, zoomRatio]);
+  const commitZoom = useCallback((value = zoomRatioRef.current) => {
+    if (facing === 'back') patch({ zoomBackRatio: clampRatio(zoomRange, value) });
+  }, [facing, patch, zoomRange]);
 
   const setEv = useCallback((value: number) => {
     setEvState(Math.min(2, Math.max(-2, Math.round(value * 4) / 4)));
@@ -161,64 +164,44 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     setThumbUri(shot?.thumb_path || shot?.path || null);
   }, []);
 
-  const archiveShot = useCallback(
-    async (cacheUri: string, ext: string): Promise<{ path: string; size: number }> => {
-      const docDir = FileSystem.documentDirectory;
-      if (!docDir) throw new Error('no document directory');
-      const dir = `${docDir}camen`;
-      await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-      const d = new Date();
-      const p = (n: number, len = 2) => String(n).padStart(len, '0');
-      // Millisecond precision + collision walk: burst/AEB saves can land in
-      // the same second, and a duplicate name would silently overwrite a shot.
-      const base = `CAM_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}_${p(d.getMilliseconds(), 3)}`;
-      let dest = `${dir}/${base}.${ext}`;
-      let n = 1;
-      while ((await FileSystem.getInfoAsync(dest)).exists) {
-        dest = `${dir}/${base}-${n}.${ext}`;
-        n++;
-      }
-      try {
-        await FileSystem.moveAsync({ from: cacheUri, to: dest });
-      } catch {
-        await FileSystem.copyAsync({ from: cacheUri, to: dest });
-      }
-      const info = await FileSystem.getInfoAsync(dest);
-      return { path: dest, size: info.exists ? (info.size ?? 0) : 0 };
-    },
-    [],
-  );
-
   const makeThumb = useCallback(async (src: string): Promise<string> => {
     const dir = `${FileSystem.documentDirectory}camen/thumbs`;
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true }).catch(() => {});
-    const name = src.split('/').pop() ?? `t${Date.now()}.jpg`;
-    const dest = `${dir}/${name}`;
-    // Videos can't go through ImageManipulator — grab a frame instead.
-    if (src.endsWith('.mp4')) {
-      const { uri: frame } = await VideoThumbnails.getThumbnailAsync(src, {
-        time: 500,
-        quality: 0.8,
-      });
-      await FileSystem.moveAsync({ from: frame, to: dest }).catch(async () => {
-        await FileSystem.copyAsync({ from: frame, to: dest });
-      });
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    const name = src.split('/').pop() ?? `t${Date.now()}`;
+    const dest = `${dir}/${name}.jpg`;
+    const scope = new ArtifactScope((uri) => FileSystem.deleteAsync(uri, { idempotent: true }));
+    try {
+      await withDeadline(scope.run(async () => {
+        const generate = async () => {
+          const result = src.endsWith('.mp4')
+            ? await VideoThumbnails.getThumbnailAsync(src, { time: 500, quality: 0.8 })
+            : await ImageManipulator.manipulateAsync(src, [{ resize: { width: 256 } }], {
+                compress: 0.8, format: ImageManipulator.SaveFormat.JPEG,
+              });
+          scope.track(result.uri);
+          return result;
+        };
+        const thumb = src.endsWith('.mp4')
+          ? await generate()
+          : await queuedManipulate(() => scope.run(generate));
+        scope.assertOpen();
+        scope.track(dest);
+        await FileSystem.copyAsync({ from: thumb.uri, to: dest });
+        scope.assertOpen();
+        scope.retain(dest);
+      }), 15000, 'Thumbnail');
       return dest;
+    } finally {
+      await scope.close();
     }
-    const thumb = await queuedManipulate(() =>
-      ImageManipulator.manipulateAsync(src, [{ resize: { width: 256 } }], {
-        compress: 0.8,
-        format: ImageManipulator.SaveFormat.JPEG,
-      }),
-    );
-    await FileSystem.moveAsync({ from: thumb.uri, to: dest }).catch(async () => {
-      await FileSystem.copyAsync({ from: thumb.uri, to: dest });
-    });
-    return dest;
   }, []);
 
   useEffect(() => {
-    void refreshThumbnail();
+    void getDefaultMediaRepository().then(async (repo) => {
+      const report = await repo.recover();
+      if (report.failed.length) rlog('[camen] pending archive recovery:', report.failed.length);
+      await refreshThumbnail();
+    }).catch((error) => rlog('[camen] archive recovery unavailable:', error));
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -258,166 +241,92 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       evOffset: number,
       maskRef?: { promise: Promise<DepthMask | null> | null },
     ): Promise<CapturedFrame> => {
-      const created: string[] = [];
-      let fileUri = photo.uri;
-      let w = photo.width;
-      let h = photo.height;
-
-      // jpeg-js ignores EXIF orientation — upright rotated captures first so
-      // crop math and the grade operate on the displayed geometry.
-      if (photo.orientation === 6 || photo.orientation === 8) {
+      const scopes: ArtifactScope[] = [];
+      const stage = async <T extends { uri: string } | null>(job: (scope: ArtifactScope) => Promise<T>): Promise<T> => {
+        const scope = new ArtifactScope((uri) => FileSystem.deleteAsync(uri, { idempotent: true }));
         try {
-          const rotated = await ImageManipulator.manipulateAsync(
-            fileUri,
-            [{ rotate: photo.orientation === 6 ? 90 : 270 }],
-            { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
-          );
-          created.push(rotated.uri);
-          fileUri = rotated.uri;
-          const t = w;
-          w = h;
-          h = t;
-        } catch (e) {
-          rlog('[camen] orientation rotate failed:', e);
+          const out = await withDeadline(scope.run(() => job(scope)), 45000, 'Photo processing');
+          if (out) scope.track(out.uri);
+          scopes.push(scope);
+          return out;
+        } catch (error) {
+          void scope.close();
+          throw error;
         }
-      }
-
-      const framing = getFraming(settings.framing);
-      if (framing.aspect && w > 0 && h > 0) {
-        try {
-          const cropped = await cropToAspect(
-            fileUri,
-            w,
-            h,
-            framing.aspect,
-            framing.maxLongEdge,
-          );
-          created.push(cropped.uri);
-          fileUri = cropped.uri;
-          w = cropped.width;
-          h = cropped.height;
-        } catch (e) {
-          rlog('[camen] crop failed, keeping native aspect:', e);
-        }
-      }
-
-      // The user's own develop values — presets loaded them, the user owns them.
-      // Depth keys don't need the tonal pass (the portrait stage below handles
-      // them), so a bokeh-only develop skips straight to segmentation.
-      const recipe = settings.develop;
-      const toneKeys = Object.keys(recipe).filter(
-        (k) => k !== 'bokeh' && k !== 'bokehGlow' && k !== 'bgTone',
-      );
-      const needsDevelop =
-        evOffset !== 0 || settings.iso > 100 || settings.develop.hdr === true ||
-        toneKeys.length > 0;
-      if (needsDevelop) {
-        setProcessing(true);
-        try {
-          // Watchdog: a native stage that never settles must not brick the
-          // shutter — fall back to the raw capture after 45s.
-          const dev = await Promise.race([
-            developPhoto(fileUri, w, h, {}, {
-              ev: evOffset,
-              iso: settings.iso,
-              ...recipe,
-            }),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('develop timeout')), 45000),
-            ),
-          ]);
-          created.push(dev.uri);
-          fileUri = dev.uri;
-          w = dev.width;
-          h = dev.height;
-        } catch (e) {
-          rlog('[camen] develop failed, saving ungraded copy:', e);
-          // Own a private copy: the original cache file must stay intact for
-          // AEB variants of the same capture.
-          const cacheDir = FileSystem.cacheDirectory;
-          if (cacheDir) {
-            try {
-              const fallback = `${cacheDir}camen_fallback_${Date.now()}.jpg`;
-              await FileSystem.copyAsync({ from: photo.uri, to: fallback });
-              created.push(fallback);
-              fileUri = fallback;
-              w = photo.width;
-              h = photo.height;
-            } catch {
-              fileUri = photo.uri; // last resort: archive the original itself
-            }
-          }
-        } finally {
-          setProcessing(false);
-        }
-      }
-
-      // Portrait depth bokeh — person-aware background blur carried by
-      // develop.bokeh (0 = off). Own watchdog, same policy as develop: a
-      // failure keeps the graded capture instead of losing the shot.
-      const bokeh = recipe.bokeh ?? 0;
-      let bokehApplied = false;
-      if (bokeh > 0) {
-        setProcessing(true);
-        try {
-          const provider = async () => {
-            if (!maskRef) return getSelfieMask(fileUri);
-            if (!maskRef.promise) maskRef.promise = getSelfieMask(fileUri);
-            return maskRef.promise;
-          };
-          const out = await Promise.race([
-            applyPortraitDepth(
-              fileUri,
-              provider,
-              {
-                bokeh,
-                bokehGlow: recipe.bokehGlow ?? bokeh * 0.45,
-                bgTone: recipe.bgTone ?? 0,
-              },
-            ),
-            new Promise<null>((_, reject) =>
-              setTimeout(() => reject(new Error('portrait timeout')), 45000),
-            ),
-          ]);
-          if (out) {
-            created.push(out.uri);
-            fileUri = out.uri;
-            w = out.width;
-            h = out.height;
-            bokehApplied = true;
-          }
-        } catch (e) {
-          rlog('[camen] portrait depth failed, keeping graded capture:', e);
-        } finally {
-          setProcessing(false);
-        }
-      }
-
-      if (settings.format === 'webp') {
-        try {
-          const converted = await ImageManipulator.manipulateAsync(fileUri, [], {
-            compress: 0.9,
-            format: ImageManipulator.SaveFormat.WEBP,
-          });
-          created.push(converted.uri);
-          fileUri = converted.uri;
-        } catch (e) {
-          rlog('[camen] webp conversion failed:', e);
-        }
-      }
-
-      return {
-        uri: fileUri,
-        width: w,
-        height: h,
-        extras: created.filter((u) => u !== fileUri),
-        bokehApplied,
       };
+      let current = { uri: photo.uri, width: photo.width, height: photo.height };
+      let oriented = true;
+      if (photo.orientation && photo.orientation !== 1) {
+        try {
+          // Glide applies all EXIF orientations while loading; do not rotate twice.
+          current = await stage((scope) => queuedManipulate(() => scope.run(async () => {
+            const out = await ImageManipulator.manipulateAsync(photo.uri, [], {
+              compress: 0.95, format: ImageManipulator.SaveFormat.JPEG,
+            });
+            scope.track(out.uri);
+            return out;
+          })));
+        } catch (error) {
+          oriented = false;
+          rlog('[camen] orientation unavailable, preserving original:', error);
+        }
+      }
+      let bokehApplied = false;
+      const recipe = settings.develop;
+      const options = { ...recipe, ev: evOffset, iso: settings.iso };
+      if (oriented) {
+        const framing = getFraming(settings.framing);
+        if (framing.aspect) {
+          try {
+            const input = current;
+            current = await stage((scope) => cropToAspect(input.uri, input.width, input.height,
+              framing.aspect, framing.maxLongEdge, scope));
+          } catch (error) { rlog('[camen] crop unavailable:', error); }
+        }
+        if (hasEffectiveDevelop(options)) {
+          setProcessing(true);
+          try {
+            const input = current;
+            current = await stage((scope) => developPhoto(input.uri, input.width, input.height, {}, options, scope));
+          } catch (error) { rlog('[camen] develop unavailable, preserving capture:', error); }
+          finally { setProcessing(false); }
+        }
+        if ((recipe.bokeh ?? 0) > 0) {
+          setProcessing(true);
+          try {
+            const input = current;
+            const provider = () => {
+              if (!maskRef) return getSelfieMask(input.uri);
+              if (!maskRef.promise) maskRef.promise = getSelfieMask(input.uri);
+              return maskRef.promise;
+            };
+            const out = await stage((scope) => applyPortraitDepth(input.uri, provider, {
+              bokeh: recipe.bokeh!, bokehGlow: recipe.bokehGlow ?? recipe.bokeh! * 0.45,
+              bgTone: recipe.bgTone ?? 0,
+            }, scope));
+            if (out) { current = out; bokehApplied = true; }
+          } catch (error) { rlog('[camen] portrait unavailable:', error); }
+          finally { setProcessing(false); }
+        }
+        if (settings.format === 'webp') {
+          try {
+            const input = current;
+            current = await stage((scope) => queuedManipulate(() => scope.run(async () => {
+              const out = await ImageManipulator.manipulateAsync(input.uri, [], {
+                compress: 0.9, format: ImageManipulator.SaveFormat.WEBP,
+              });
+              scope.track(out.uri);
+              return out;
+            })));
+          } catch (error) { rlog('[camen] WebP unavailable:', error); }
+        }
+      }
+      return { ...current, bokehApplied, dispose: async () => { await Promise.all(scopes.map((scope) => scope.close())); } };
     },
     [settings.develop, settings.framing, settings.format, settings.iso],
   );
 
-  /** Archive → EXIF GPS → thumb → gallery export → SQLite row. */
+  /** Prepare metadata, durably archive/index, then generate optional assets. */
   const saveShot = useCallback(
     async (
       shot: CapturedFrame,
@@ -426,38 +335,15 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       media: { mediaType: 'photo' | 'video'; durationMs?: number } = { mediaType: 'photo' },
     ): Promise<void> => {
       // Trust the actual file bytes, not the setting — a failed webp
-      // conversion must never archive JPEG data under a .webp name.
-      const ext = shot.uri.split('.').pop()?.toLowerCase() === 'webp' ? 'webp' : 'jpg';
-      const { path, size } = await archiveShot(shot.uri, ext);
-      if (coords) {
-        rlog('[camen] geotag', coords.lat.toFixed(5), coords.lon.toFixed(5));
-        try {
-          await injectGpsExif(path, coords.lat, coords.lon);
-        } catch (e) {
-          rlog('[camen] gps exif failed:', e);
-        }
-      }
-      let thumbPath = '';
-      try {
-        thumbPath = await makeThumb(path);
-      } catch {
-        // thumb is a convenience — never blocks the save
-      }
-      let galleryUri: string | null = null;
-      try {
-        // Media permissions are runtime-granted on standalone builds; ask
-        // once, then export. Denied → archive-only (the app's own folder is
-        // the source of truth anyway).
-        const mediaPerm = await MediaLibrary.getPermissionsAsync();
-        if (!mediaPerm.granted) {
-          const req = await MediaLibrary.requestPermissionsAsync();
-          if (!req.granted) throw new Error('media permission denied');
-        }
-        const asset = await MediaLibrary.createAssetAsync(path);
-        galleryUri = asset?.uri ?? null;
-      } catch (e) {
-        rlog('[camen] gallery export failed:', e);
-      }
+      // conversion must never archive JPEG data under a .webp name. Videos
+      // keep whatever extension the recorder produced (default mp4).
+      const srcExt = shot.uri.split('.').pop()?.toLowerCase();
+      const ext =
+        media.mediaType === 'video'
+          ? srcExt || 'mp4'
+          : srcExt === 'webp'
+            ? 'webp'
+            : 'jpg';
       // `raw` marks speed-priority burst originals: no crop, no develop values
       // touched them — the log must not claim otherwise.
       // Modified develop values log as 'custom'; user presets log as their id.
@@ -476,34 +362,67 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       } else {
         loggedPreset = settings.preset;
       }
-      insertShot({
-        created_at: Date.now(),
-        path,
-        thumb_path: thumbPath,
-        gallery_uri: galleryUri,
-        filter_id: 'none', // filter system removed in v1.12
-        facing,
-        width: shot.width,
-        height: shot.height,
-        size_bytes: size,
-        flash_mode: settings.flashMode,
-        zoom_ratio: facing === 'back' ? zoomRatio : 1,
-        timer_seconds: settings.timerSeconds,
-        edge_light: settings.edgeLight,
-        device: 'Redmi K80 Pro',
-        framing: meta.raw ? 'full' : settings.framing,
-        preset_id: loggedPreset,
-        preset_sub: meta.raw ? 'standard' : settings.presetSub,
-        ev: meta.ev,
-        iso: meta.raw ? 0 : settings.iso,
-        tone: meta.raw ? 'ldr' : settings.develop.hdr ? 'hdr' : 'ldr',
-        aeb: meta.aeb ? 1 : 0,
-        lat: coords?.lat ?? null,
-        lon: coords?.lon ?? null,
-        media_type: media.mediaType,
-        duration_ms: media.durationMs ?? null,
-        bokeh: meta.raw ? null : shot.bokehApplied ? settings.develop.bokeh ?? null : null,
-      });
+      const repo = await getDefaultMediaRepository();
+      let archiveSource = shot.uri;
+      const gpsScope = new ArtifactScope((uri) => FileSystem.deleteAsync(uri, { idempotent: true }));
+      if (coords && media.mediaType === 'photo' && ext === 'jpg') {
+        const copy = `${FileSystem.cacheDirectory}gps-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+        gpsScope.track(copy);
+        try {
+          await withDeadline(gpsScope.run(async () => {
+            await FileSystem.copyAsync({ from: shot.uri, to: copy });
+            gpsScope.assertOpen();
+            await injectGpsExif(copy, coords.lat, coords.lon);
+          }), 15000, 'GPS metadata');
+          archiveSource = copy;
+        } catch (error) {
+          void gpsScope.close();
+          rlog('[camen] GPS EXIF unavailable, preserving capture:', error);
+        }
+      }
+      // A failed archive keeps its GPS source for journal recovery.
+      const { path } = await repo.savePhoto({ sourceUri: archiveSource, extension: ext, meta: {
+          created_at: Date.now(),
+          filter_id: 'none', // filter system removed in v1.12
+          facing,
+          width: shot.width,
+          height: shot.height,
+          flash_mode: settings.flashMode,
+          zoom_ratio: zoomRatio,
+          timer_seconds: settings.timerSeconds,
+          edge_light: settings.edgeLight,
+          device: 'Redmi K80 Pro',
+          framing: meta.raw ? 'full' : settings.framing,
+          preset_id: loggedPreset,
+          preset_sub: meta.raw ? 'standard' : settings.presetSub,
+          ev: meta.ev,
+          iso: meta.raw ? 0 : settings.iso,
+          tone: meta.raw ? 'ldr' : settings.develop.hdr ? 'hdr' : 'ldr',
+          aeb: meta.aeb ? 1 : 0,
+          lat: coords?.lat ?? null,
+          lon: coords?.lon ?? null,
+          media_type: media.mediaType,
+          duration_ms: media.durationMs ?? null,
+          bokeh: meta.raw ? null : shot.bokehApplied ? settings.develop.bokeh ?? null : null,
+      } });
+      await gpsScope.close();
+      const optionalAssets = async () => {
+        let thumbPath = '';
+        try { thumbPath = await makeThumb(path); }
+        catch (error) { rlog('[camen] thumbnail unavailable:', error); }
+        if (thumbPath) await repo.updateAssets(path, { thumb_path: thumbPath });
+        try {
+          let permission = await MediaLibrary.getPermissionsAsync(false, ['photo', 'video']);
+          if (!permission.granted) permission = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
+          if (permission.granted) {
+            const asset = await MediaLibrary.createAssetAsync(path);
+            await repo.updateAssets(path, { gallery_uri: asset.uri });
+          }
+        } catch (error) { rlog('[camen] gallery export unavailable:', error); }
+        await refreshThumbnail();
+      };
+      // Optional exports cannot hold the capture lock or invalidate archived pixels.
+      void optionalAssets().catch((error) => rlog('[camen] optional assets failed:', error));
 
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       if (!meta.aeb) showToast('Saved');
@@ -511,7 +430,6 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       void refreshThumbnail();
     },
     [
-      archiveShot,
       facing,
       makeThumb,
       refreshThumbnail,
@@ -541,6 +459,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     r?.({ canceled: true });
   }, []);
 
+  // Unmounting mid-steady-wait must release the sensor subscription and settle
+  // the pending promise, or the subscriber leaks past the screen's lifetime.
+  useEffect(() => () => cancelSteady(), [cancelSteady]);
+
   /**
    * Resolves once the phone has been held steady (smoothed |‖a‖ − 1g| under the
    * threshold for STEADY_HOLD_MS), or after STEADY_TIMEOUT_MS — the shot is taken
@@ -552,6 +474,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       const finish = (r: { canceled: boolean }) => {
         if (settled) return;
         settled = true;
+        clearTimeout(deadline);
         steadySubRef.current?.remove();
         steadySubRef.current = null;
         steadyResolveRef.current = null;
@@ -567,6 +490,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       let reported = false;
 
       setSteady({ active: true, ok: false });
+      // Independent deadline: the timeout must not depend on the accelerometer
+      // delivering events — a stalled sensor would hang the shutter forever.
+      const deadline = setTimeout(() => finish({ canceled: false }), STEADY_TIMEOUT_MS + 250);
       Accelerometer.setUpdateInterval(60);
       steadySubRef.current = Accelerometer.addListener((d) => {
         if (settled) return;
@@ -582,15 +508,17 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           reported = ok;
           setSteady({ active: true, ok });
         }
-        if (ok || now - start > STEADY_TIMEOUT_MS) {
-          finish({ canceled: false });
-        }
+        if (ok) finish({ canceled: false });
       });
     });
   }, []);
 
   // ---- capture ------------------------------------------------------------
   const capture = useCallback(async () => {
+    // The timer countdown fires the CURRENT capture — if the user switched to
+    // video mode while it was counting down, firing would grab a still frame
+    // inside video mode. Photo pipelines only run in photo mode.
+    if (settings.mode !== 'photo') return;
     if (phaseRef.current !== 'ready' || !cameraRef.current) return;
     phaseRef.current = 'capturing';
     setPhase('capturing');
@@ -615,6 +543,12 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         shutterSound: settings.shutterSound,
       });
       if (!photo?.uri) throw new Error('capture returned no uri');
+      // The flash lit the sensor — end the white-out now, not after the whole
+      // develop/save pipeline (which can take seconds and blinds the user).
+      if (useScreenFlash) {
+        setScreenFlashArmed(false);
+        useScreenFlash = false;
+      }
       phaseRef.current = 'saving';
       setPhase('saving');
 
@@ -647,20 +581,31 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
       // Archive everything, then reclaim the cache (original + intermediates).
       // Archived finals were moved away; deleteAsync is idempotent anyway.
-      const cleanup = [frame.uri, ...results.flatMap((r) => r.shot.extras ?? [])];
+      // Each variant saves in its own try — one failed insert must not abort
+      // the remaining AEB brackets (they were already captured and processed).
+      const retained = new Set<string>();
+      let savedCount = 0;
+      let saveFailed = false;
       try {
         for (const r of results) {
-          await saveShot(r.shot, r.meta.aeb ? null : coords, r.meta);
+          try {
+            await saveShot(r.shot, r.meta.aeb ? null : coords, r.meta);
+            savedCount++;
+            await r.shot.dispose?.();
+            if (r.shot.uri !== frame.uri) void FileSystem.deleteAsync(r.shot.uri, { idempotent: true }).catch(() => {});
+          } catch (e) {
+            retained.add(r.shot.uri);
+            rlog('[camen] save failed:', e);
+            saveFailed = true;
+          }
         }
-        if (settings.aeb && results.length === 3) showToast('AEB ×3 saved');
-      } catch (e) {
-        rlog('[camen] save failed:', e);
-        setSaveError(true);
-        showToast('Save failed');
+        if (settings.aeb && savedCount === 3) showToast('AEB ×3 saved');
+        if (saveFailed) {
+          setSaveError(true);
+          showToast('Save failed');
+        }
       } finally {
-        for (const uri of cleanup) {
-          void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
-        }
+        if (!retained.has(frame.uri)) void FileSystem.deleteAsync(frame.uri, { idempotent: true }).catch(() => {});
       }
     } catch (e) {
       rlog('[camen] capture failed:', e);
@@ -679,6 +624,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     settings.aeb,
     settings.antiShake,
     settings.flashMode,
+    settings.mode,
     settings.shutterSound,
     showToast,
     waitForSteady,
@@ -714,7 +660,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       const total = seconds * 1000;
       const endAt = Date.now() + total;
       tickRef.current = seconds + 1;
-      setCountdown({ active: true, total, remaining: seconds });
+      // remaining/total are both milliseconds — the ring stroke divides them.
+      setCountdown({ active: true, total, remaining: total });
       void KeepAwake.activateKeepAwakeAsync().catch(() => {});
       intervalRef.current = setInterval(() => {
         const remainingMs = Math.max(0, endAt - Date.now());
@@ -730,7 +677,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           setCountdown(IDLE_COUNTDOWN);
           void captureRef.current();
         } else {
-          setCountdown({ active: true, total, remaining: remainingMs / 1000 });
+          setCountdown({ active: true, total, remaining: remainingMs });
         }
       }, 50);
     },
@@ -738,8 +685,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   );
 
   const switchFacing = useCallback(() => {
-    // Camera switch mid-recording would orphan the record promise — block it.
-    if (phaseRef.current === 'recording') return;
+    // Lens switches are only safe from the idle state: mid-recording they
+    // orphan the record promise, mid-burst/capture they race the native
+    // session, and a countdown would fire the stale lens's closure.
+    if (phaseRef.current !== 'ready') return;
     const next = facing === 'back' ? 'front' : 'back';
     if (next === 'front' ? !profile.hasFront : !profile.hasBack) return;
     if (intervalRef.current) cancelCountdown();
@@ -752,6 +701,10 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   const startBurst = useCallback(() => {
     if (burstActiveRef.current || phaseRef.current !== 'ready' || !cameraRef.current) return;
     burstActiveRef.current = true;
+    // Own the capture lock for the whole acquisition — an unlocked burst let a
+    // second tap interleave another native capture against the same session.
+    phaseRef.current = 'capturing';
+    setPhase('capturing');
     setBurst({ active: true, count: 0 });
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     (async () => {
@@ -787,6 +740,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       for (const frame of collected) {
         try {
           await saveShot(frame, coords, { ev: 0, aeb: false, raw: true });
+          void FileSystem.deleteAsync(frame.uri, { idempotent: true }).catch(() => {});
         } catch (e) {
           rlog('[camen] burst save failed:', e);
           setSaveError(true);
@@ -800,6 +754,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
 
   // ---- video recording -------------------------------------------------------
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Session token: stopRecording() bumps it so a permission chain that is
+  // still starting up aborts instead of rolling film nobody asked for.
+  const videoSessionRef = useRef(0);
 
   const stopRecordTimer = useCallback(() => {
     if (recordTimerRef.current) {
@@ -818,14 +775,11 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
    */
   const startRecording = useCallback(() => {
     if (phaseRef.current !== 'ready' || !cameraRef.current) return;
+    const session = ++videoSessionRef.current;
     phaseRef.current = 'recording';
     setPhase('recording');
     setRecording(true);
-    recordStartRef.current = Date.now();
     setRecordSeconds(0);
-    recordTimerRef.current = setInterval(() => {
-      setRecordSeconds(Math.floor((Date.now() - recordStartRef.current) / 1000));
-    }, 500);
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     (async () => {
       try {
@@ -844,6 +798,19 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       } catch {
         // permission check unavailable — let the native call decide
       }
+      // A stop pressed while the permission chain was running must win: never
+      // call recordAsync for an already-cancelled session.
+      if (videoSessionRef.current !== session) {
+        setRecording(false);
+        stopRecordTimer();
+        phaseRef.current = 'ready';
+        setPhase('ready');
+        return;
+      }
+      recordStartRef.current = Date.now();
+      recordTimerRef.current = setInterval(() => {
+        setRecordSeconds(Math.floor((Date.now() - recordStartRef.current) / 1000));
+      }, 500);
       let vid: Awaited<ReturnType<NonNullable<typeof cameraRef.current>['recordAsync']>> | null =
         null;
       try {
@@ -871,6 +838,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           { ev: 0, aeb: false, raw: true },
           { mediaType: 'video', durationMs },
         );
+        void FileSystem.deleteAsync(vid.uri, { idempotent: true }).catch(() => {});
       } catch (e) {
         rlog('[camen] video save failed:', e);
         setSaveError(true);
@@ -883,6 +851,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   }, [fetchCoords, saveShot, showToast, stopRecordTimer]);
 
   const stopRecording = useCallback(() => {
+    // Invalidate any startup still in its permission chain, then stop the
+    // native recorder (a no-op when recording never actually began).
+    videoSessionRef.current++;
     cameraRef.current?.stopRecording();
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
   }, []);
@@ -964,7 +935,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
         : countdown.active
           ? 'breath'
           : 'idle';
-  const ringIntense = countdown.active && countdown.remaining <= 1;
+  const ringIntense = countdown.active && countdown.remaining <= 1000;
 
   const shutterBusy = phase !== 'ready';
 
@@ -987,6 +958,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     setZoomRatio,
     commitZoom,
     countdown,
+    cancelCountdown,
     ringMode,
     ringIntense,
     thumbUri,

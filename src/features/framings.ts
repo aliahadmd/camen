@@ -33,7 +33,14 @@ export const FRAMINGS: Framing[] = [
 export const getFraming = (id: string): Framing =>
   FRAMINGS.find((f) => f.id === id) ?? FRAMINGS[0];
 
-/** Largest centered rect with this aspect that fits inside maxW × maxH. */
+/** Preview is portrait-oriented; null remains the capture's no-crop sentinel. */
+export function previewAspect(mode: 'photo' | 'video', photoAspect: number | null): number {
+  return mode === 'video' ? 9 / 16 : photoAspect ?? 3 / 4;
+}
+
+/** Largest centered rect with this aspect that fits inside maxW × maxH.
+ * Null means no crop here too; preview callers must resolve previewAspect first.
+ */
 export function frameRect(
   aspect: number | null,
   maxW: number,

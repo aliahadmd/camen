@@ -146,6 +146,37 @@ ok('far band destroys the background checkerboard, near band softens it', () => 
   assert.ok(nearVar < origVar * 0.5 && nearVar > farVar, 'near band between original and far');
 });
 
+ok('composite: near band hugs the subject, far band takes the distance', () => {
+  // Hand-built layers: grid cell 0 has proximity 1 (next to the subject),
+  // cell 1 has proximity 0 (far). The composite must pick the lightly-blurred
+  // NEAR band at high proximity and the heavily-blurred FAR band at low —
+  // the v1.15 coefficients were reversed.
+  const layers3 = {
+    gridW: 2,
+    gridH: 1,
+    sharp: new Float32Array([0, 0]),
+    proximity: new Float32Array([1, 0]),
+    near: {
+      r: new Float32Array([40, 40]),
+      g: new Float32Array([40, 40]),
+      b: new Float32Array([40, 40]),
+    },
+    far: {
+      r: new Float32Array([200, 200]),
+      g: new Float32Array([200, 200]),
+      b: new Float32Array([200, 200]),
+    },
+    glow: null,
+  };
+  const w = 4;
+  const h = 2;
+  const data = new Uint8Array(w * h * 4);
+  for (let p = 0; p < w * h; p++) data[p * 4 + 3] = 255;
+  compositePortrait(data, w, h, layers3, 0);
+  assert.equal(data[0], 40, 'high proximity → near band');
+  assert.equal(data[(1 * w + 3) * 4], 200, 'low proximity → far band');
+});
+
 ok('composite keeps subject pixels exact and blurs the far background', () => {
   // Full-res composite at 2× the grid so each grid cell covers 2×2 pixels.
   const w = 128;

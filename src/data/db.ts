@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { ensurePathIndex } from './pathIndex';
 
 /**
  * Camen's shot log — the app's own camera data index (plan/plan13.md).
@@ -38,68 +39,86 @@ export type ShotRow = {
 
 export type NewShot = Omit<ShotRow, 'id'>;
 
-const db = SQLite.openDatabaseSync('camen.db');
+/**
+ * Guarded init: an open/migration failure is stored, not silently swallowed —
+ * every repository call then throws a clear error (the save pipeline shows
+ * "Save failed" and compensates instead of stranding unindexed files).
+ */
+let db: SQLite.SQLiteDatabase | null = null;
+let initError: unknown = null;
+try {
+  db = SQLite.openDatabaseSync('camen.db');
+  // Cheap writes, crash-safe — the plan promised WAL; actually enable it.
+  db.execSync('PRAGMA journal_mode = WAL');
+  db.execSync(`
+    CREATE TABLE IF NOT EXISTS shots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      thumb_path TEXT NOT NULL,
+      gallery_uri TEXT,
+      filter_id TEXT NOT NULL,
+      facing TEXT NOT NULL,
+      width INTEGER NOT NULL,
+      height INTEGER NOT NULL,
+      size_bytes INTEGER,
+      flash_mode TEXT,
+      zoom_ratio REAL,
+      timer_seconds INTEGER,
+      edge_light INTEGER NOT NULL DEFAULT 0,
+      device TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_shots_created ON shots (created_at DESC);
+  `);
 
-db.execSync(`
-  CREATE TABLE IF NOT EXISTS shots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at INTEGER NOT NULL,
-    path TEXT NOT NULL,
-    thumb_path TEXT NOT NULL,
-    gallery_uri TEXT,
-    filter_id TEXT NOT NULL,
-    facing TEXT NOT NULL,
-    width INTEGER NOT NULL,
-    height INTEGER NOT NULL,
-    size_bytes INTEGER,
-    flash_mode TEXT,
-    zoom_ratio REAL,
-    timer_seconds INTEGER,
-    edge_light INTEGER NOT NULL DEFAULT 0,
-    device TEXT
+  // Column migrations, checked against the real schema instead of
+  // try/catch-swallowing every ALTER failure (which also hid disk/corruption
+  // errors behind "column already exists").
+  const existing = new Set(
+    db
+      .getAllSync<{ name: string }>('PRAGMA table_info(shots)')
+      .map((r) => r.name),
   );
-  CREATE INDEX IF NOT EXISTS idx_shots_created ON shots (created_at DESC);
-`);
-
-// v1.4: framing column (guarded — idempotent across upgrades)
-try {
-  db.execSync('ALTER TABLE shots ADD COLUMN framing TEXT');
-} catch {
-  // column already exists
-}
-
-// v1.5: pro capture columns (guarded — idempotent across upgrades)
-for (const col of [
-  'ev REAL',
-  'iso INTEGER',
-  'tone TEXT',
-  'aeb INTEGER',
-  'lat REAL',
-  'lon REAL',
-  'preset_id TEXT',
-  'preset_sub TEXT',
-]) {
-  try {
-    db.execSync(`ALTER TABLE shots ADD COLUMN ${col}`);
-  } catch {
-    // column already exists
+  const migrations: string[] = [
+    // v1.4: framing
+    'framing TEXT',
+    // v1.5: pro capture columns
+    'ev REAL',
+    'iso INTEGER',
+    'tone TEXT',
+    'aeb INTEGER',
+    'lat REAL',
+    'lon REAL',
+    'preset_id TEXT',
+    'preset_sub TEXT',
+    // v1.10: video support
+    "media_type TEXT NOT NULL DEFAULT 'photo'",
+    'duration_ms INTEGER',
+    // v1.15: portrait depth strength actually used for the shot
+    'bokeh REAL',
+  ];
+  for (const col of migrations) {
+    const name = col.split(' ')[0];
+    if (existing.has(name)) continue;
+    try {
+      db.execSync(`ALTER TABLE shots ADD COLUMN ${col}`);
+    } catch (e) {
+      throw new Error(`shots migration failed for column ${name}`, { cause: e });
+    }
   }
+
+  ensurePathIndex(db);
+} catch (e) {
+  initError = e;
+  db = null;
+  console.error('[camen] shots database init failed:', e);
 }
 
-// v1.10: video support (guarded — idempotent across upgrades)
-for (const col of ["media_type TEXT NOT NULL DEFAULT 'photo'", 'duration_ms INTEGER']) {
-  try {
-    db.execSync(`ALTER TABLE shots ADD COLUMN ${col}`);
-  } catch {
-    // column already exists
+function requireDb(): SQLite.SQLiteDatabase {
+  if (!db) {
+    throw new Error('shots database unavailable', { cause: initError });
   }
-}
-
-// v1.15: portrait depth strength actually used for the shot (guarded)
-try {
-  db.execSync('ALTER TABLE shots ADD COLUMN bokeh REAL');
-} catch {
-  // column already exists
+  return db;
 }
 
 const SHOT_COLUMNS = `created_at, path, thumb_path, gallery_uri, filter_id, facing,
@@ -108,7 +127,8 @@ const SHOT_COLUMNS = `created_at, path, thumb_path, gallery_uri, filter_id, faci
        preset_sub, media_type, duration_ms, bokeh`;
 
 export function insertShot(s: NewShot): number {
-  const res = db.runSync(
+  const d = requireDb();
+  const res = d.runSync(
     `INSERT INTO shots
        (${SHOT_COLUMNS})
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -146,36 +166,138 @@ export function insertShot(s: NewShot): number {
 
 export function latestShot(): ShotRow | null {
   return (
-    db.getFirstSync<ShotRow>('SELECT * FROM shots ORDER BY id DESC LIMIT 1') ??
+    requireDb().getFirstSync<ShotRow>('SELECT * FROM shots ORDER BY id DESC LIMIT 1') ??
     null
   );
 }
 
 export function recentShots(limit = 200, mediaType?: 'photo' | 'video'): ShotRow[] {
+  const d = requireDb();
   if (mediaType) {
-    return db.getAllSync<ShotRow>(
+    return d.getAllSync<ShotRow>(
       'SELECT * FROM shots WHERE media_type = ? ORDER BY id DESC LIMIT ?',
       [mediaType, limit],
     );
   }
-  return db.getAllSync<ShotRow>(
+  return d.getAllSync<ShotRow>(
     'SELECT * FROM shots ORDER BY id DESC LIMIT ?',
     [limit],
   );
 }
 
+/** Older-than-cursor page for the SHOTS grid (keyset pagination). */
+export function recentShotsBefore(
+  limit: number,
+  beforeId: number,
+  mediaType?: 'photo' | 'video',
+): ShotRow[] {
+  const d = requireDb();
+  if (mediaType) {
+    return d.getAllSync<ShotRow>(
+      'SELECT * FROM shots WHERE media_type = ? AND id < ? ORDER BY id DESC LIMIT ?',
+      [mediaType, beforeId, limit],
+    );
+  }
+  return d.getAllSync<ShotRow>(
+    'SELECT * FROM shots WHERE id < ? ORDER BY id DESC LIMIT ?',
+    [beforeId, limit],
+  );
+}
+
 export function deleteShot(id: number): void {
-  db.runSync('DELETE FROM shots WHERE id = ?', [id]);
+  requireDb().runSync('DELETE FROM shots WHERE id = ?', [id]);
 }
 
 /** Total shots and total archive bytes — for the settings DEVICE section. */
 export function archiveStats(): { count: number; bytes: number } {
-  const row = db.getFirstSync<{ c: number; b: number | null }>(
+  const row = requireDb().getFirstSync<{ c: number; b: number | null }>(
     'SELECT COUNT(*) AS c, SUM(size_bytes) AS b FROM shots',
   );
   return { count: row?.c ?? 0, bytes: row?.b ?? 0 };
 }
 
 export function countShots(): number {
-  return db.getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM shots')?.c ?? 0;
+  return requireDb().getFirstSync<{ c: number }>('SELECT COUNT(*) AS c FROM shots')?.c ?? 0;
+}
+
+// ---- F10: recoverable archive repository support ---------------------------
+
+/**
+ * Idempotent insert keyed on the archive path. Returns the new row id, or
+ * null when a row for this path already exists (the recovery replay relies on
+ * this instead of deleting + reinserting).
+ */
+export function insertShotIfMissing(s: NewShot): number | null {
+  const d = requireDb();
+  const existing = d.getFirstSync<{ id: number }>(
+    'SELECT id FROM shots WHERE path = ? LIMIT 1',
+    [s.path],
+  );
+  if (existing) return null;
+  const res = d.runSync(
+    `INSERT INTO shots
+       (${SHOT_COLUMNS})
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      s.created_at,
+      s.path,
+      s.thumb_path,
+      s.gallery_uri,
+      s.filter_id,
+      s.facing,
+      s.width,
+      s.height,
+      s.size_bytes,
+      s.flash_mode,
+      s.zoom_ratio,
+      s.timer_seconds,
+      s.edge_light,
+      s.device,
+      s.framing,
+      s.ev,
+      s.iso,
+      s.tone,
+      s.aeb,
+      s.lat,
+      s.lon,
+      s.preset_id,
+      s.preset_sub,
+      s.media_type,
+      s.duration_ms,
+      s.bokeh ?? null,
+    ],
+  );
+  return res.lastInsertRowId;
+}
+
+/** The indexed row for an archive path, if any. */
+export function getShotByPath(path: string): ShotRow | null {
+  return (
+    requireDb().getFirstSync<ShotRow>('SELECT * FROM shots WHERE path = ? LIMIT 1', [path]) ??
+    null
+  );
+}
+
+/**
+ * Back-fills the optional asset fields (thumb, gallery) on an already-indexed
+ * shot. Used by recovery (blank optional columns) and by the hook after it
+ * finishes thumbnail/gallery work for a save that indexed early.
+ */
+export function updateShotAssets(
+  path: string,
+  patch: { thumb_path?: string; gallery_uri?: string | null },
+): void {
+  const sets: string[] = [];
+  const args: (string | null)[] = [];
+  if (patch.thumb_path !== undefined) {
+    sets.push('thumb_path = ?');
+    args.push(patch.thumb_path);
+  }
+  if (patch.gallery_uri !== undefined) {
+    sets.push('gallery_uri = ?');
+    args.push(patch.gallery_uri);
+  }
+  if (sets.length === 0) return;
+  args.push(path);
+  requireDb().runSync(`UPDATE shots SET ${sets.join(', ')} WHERE path = ?`, args);
 }

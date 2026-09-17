@@ -2,6 +2,7 @@ import Svg, { Circle } from 'react-native-svg';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { colors, monoFont } from '../theme';
+import { countdownDisplay } from '../features/cameraMath';
 
 const SIZE = 96;
 const STROKE = 3;
@@ -19,8 +20,7 @@ export function CountdownRing({
   remaining: number;
   total: number;
 }) {
-  const progress = total > 0 ? Math.max(0, Math.min(1, remaining / total)) : 0;
-  const seconds = Math.max(1, Math.ceil(remaining));
+  const { progress, seconds } = countdownDisplay(remaining, total);
   return (
     <View style={styles.wrap} pointerEvents="none">
       <Svg width={SIZE} height={SIZE}>

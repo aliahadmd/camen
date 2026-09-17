@@ -1,7 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { VideoView, useVideoPlayer } from 'expo-video';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -19,12 +20,16 @@ import {
   countShots,
   deleteShot,
   recentShots,
+  recentShotsBefore,
   type ShotRow,
 } from '../data/db';
 import { presetDisplayName, presetSubName } from '../features/presets';
 import { refreshUserPresets, userPresetName } from '../features/userPresets';
 
 type Tab = 'all' | 'photo' | 'video';
+
+/** Grid page size — older shots stream in on scroll instead of a hard 200 cap. */
+const PAGE_SIZE = 60;
 
 /**
  * SHOTS — in-app browser for the capture log (SQLite + the app-owned archive).
@@ -41,31 +46,68 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('all');
   const [version, setVersion] = useState(0);
   const [viewing, setViewing] = useState<ShotRow | null>(null);
+  const [shots, setShots] = useState<ShotRow[]>([]);
+  const [hasMore, setHasMore] = useState(false);
 
-  const shots = useMemo(
-    () => recentShots(200, tab === 'all' ? undefined : tab),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tab, version],
+  const loadPage = useCallback(
+    (beforeId?: number) => {
+      try {
+        const mediaType = tab === 'all' ? undefined : tab;
+        const rows =
+          beforeId != null
+            ? recentShotsBefore(PAGE_SIZE, beforeId, mediaType)
+            : recentShots(PAGE_SIZE, mediaType);
+        setShots((prev) => (beforeId != null ? [...prev, ...rows] : rows));
+        setHasMore(rows.length === PAGE_SIZE);
+      } catch (e) {
+        // A failed index (corrupt store) must not red-screen the browser.
+        console.error('[camen] shots query failed:', e);
+        if (beforeId == null) setShots([]);
+        setHasMore(false);
+      }
+    },
+    [tab],
   );
-  const total = useMemo(() => countShots(), [version]);
+
+  useEffect(() => {
+    loadPage();
+  }, [loadPage, version]);
+
+  const total = useMemo(() => {
+    try {
+      return countShots();
+    } catch {
+      return 0;
+    }
+  }, [version]);
 
   const removeShot = (shot: ShotRow) => {
-    Alert.alert('Delete shot?', 'This removes it from Camen and the gallery.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          void FileSystem.deleteAsync(shot.path, { idempotent: true }).catch(() => {});
-          if (shot.thumb_path) {
-            void FileSystem.deleteAsync(shot.thumb_path, { idempotent: true }).catch(() => {});
-          }
-          deleteShot(shot.id);
-          setViewing(null);
-          setVersion((v) => v + 1);
+    Alert.alert(
+      'Delete shot?',
+      'This removes it from Camen. The exported gallery copy is deleted too, when media permissions allow.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            void FileSystem.deleteAsync(shot.path, { idempotent: true }).catch(() => {});
+            if (shot.thumb_path) {
+              void FileSystem.deleteAsync(shot.thumb_path, { idempotent: true }).catch(() => {});
+            }
+            if (shot.gallery_uri) {
+              // Best-effort: deleting the MediaStore asset can be refused by
+              // the system on another app's behalf — the archive copy is gone
+              // regardless, so never block the row delete on it.
+              void MediaLibrary.deleteAssetsAsync([shot.gallery_uri]).catch(() => {});
+            }
+            deleteShot(shot.id);
+            setViewing(null);
+            setVersion((v) => v + 1);
+          },
         },
-      },
-    ]);
+      ],
+    );
   };
 
   if (viewing) {
@@ -124,6 +166,10 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
           keyExtractor={(s) => String(s.id)}
           numColumns={3}
           contentContainerStyle={{ paddingBottom: insets.bottom + spacing.xl }}
+          onEndReached={() => {
+            if (hasMore && shots.length > 0) loadPage(shots[shots.length - 1].id);
+          }}
+          onEndReachedThreshold={0.5}
           renderItem={({ item }) => (
             <Pressable
               style={styles.cell}
@@ -186,8 +232,13 @@ function ShotDetail({
   const share = async () => {
     try {
       if (!(await Sharing.isAvailableAsync())) return;
+      // The mime must match the actual file — a WebP announced as JPEG
+      // confuses receiving apps.
+      const photoMime = shot.path.toLowerCase().endsWith('.webp')
+        ? 'image/webp'
+        : 'image/jpeg';
       await Sharing.shareAsync(shot.path, {
-        mimeType: isVideo ? 'video/mp4' : 'image/jpeg',
+        mimeType: isVideo ? 'video/mp4' : photoMime,
         dialogTitle: 'Share shot',
       });
     } catch {

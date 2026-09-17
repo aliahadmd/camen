@@ -22,7 +22,7 @@ index 21382f8..0741b60 100644
          ratio?.let {
            if (view.ratio != it) {
 diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
-index 999a22c..e70be53 100644
+index 999a22c..c028ace 100644
 --- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
 +++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
 @@ -180,6 +180,27 @@ class ExpoCameraView(
@@ -53,7 +53,7 @@ index 999a22c..e70be53 100644
    var videoQuality: VideoQuality = VideoQuality.VIDEO1080P
      set(value) {
        field = value
-@@ -637,9 +658,14 @@ class ExpoCameraView(
+@@ -637,17 +658,32 @@ class ExpoCameraView(
          previewView.height.toFloat()
        )
        val action = FocusMeteringAction.Builder(
@@ -70,6 +70,26 @@ index 999a22c..e70be53 100644
          .build()
        it.cameraControl.startFocusAndMetering(action)
      }
+   }
+ 
+   private fun setCameraZoom(value: Float) {
+-    val maxZoomRatio = camera?.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
+-    val targetZoomRatio = max(1f, min(maxZoomRatio, value.coerceIn(0f, 1f) * maxZoomRatio))
++    // Camen patch: map the normalized 0..1 linearly across the sensor's FULL
++    // range [minZoomRatio, maxZoomRatio]. Upstream floors at 1x ("max(1f, …)")
++    // and multiplies the normalized value by the max alone, which made the
++    // 0.6x ultrawide stop unreachable and mis-scaled every stop in between.
++    val zoomState = camera?.cameraInfo?.zoomState?.value
++    val minZoomRatio = zoomState?.minZoomRatio ?: 1f
++    val maxZoomRatio = zoomState?.maxZoomRatio ?: 1f
++    val targetZoomRatio =
++      min(
++        maxZoomRatio,
++        max(minZoomRatio, minZoomRatio + value.coerceIn(0f, 1f) * (maxZoomRatio - minZoomRatio)),
++      )
+     camera?.cameraControl?.setZoomRatio(targetZoomRatio)
+   }
+ 
 diff --git a/node_modules/expo-camera/build/Camera.types.d.ts b/node_modules/expo-camera/build/Camera.types.d.ts
 index 0ee50ec..afa0eaf 100644
 --- a/node_modules/expo-camera/build/Camera.types.d.ts

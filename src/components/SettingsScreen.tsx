@@ -106,8 +106,9 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
           );
         })}
         <Text style={styles.hint}>
-          The viewfinder shows the framing. The shot is center-cropped to match —
-          full sensor quality, no downscaling.
+          The viewfinder shows the framing. The shot is center-cropped to match;
+          oversized frames are resized to the 2560px develop cap. Shown
+          dimensions are the sensor's native estimates.
         </Text>
 
         <Text style={styles.section}>CAPTURE</Text>

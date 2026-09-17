@@ -3,6 +3,7 @@ import * as Brightness from 'expo-brightness';
 import * as Haptics from 'expo-haptics';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
+  Alert,
   AppState,
   Animated,
   Pressable,
@@ -20,13 +21,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { runOnJS, useSharedValue } from 'react-native-reanimated';
 
 import { colors, label as labelStyle, monoFont, spacing } from '../theme';
-import {
-  clampRatio,
-  ratioToNormalized,
-  useDeviceProfile,
-} from '../features/deviceProfile';
-import { DEFAULT_SETTINGS, useSettings, type GridMode } from '../features/settings';
-import { frameRect, getFraming } from '../features/framings';
+import { clampRatio, ratioToNormalized, useDeviceProfile, zoomRangeForFacing } from '../features/deviceProfile';
+import { useSettings, type GridMode, type Settings } from '../features/settings';
+import { frameRect, getFraming, previewAspect } from '../features/framings';
 import {
   CAPTURE_PRESETS,
   getPreset as getCapturePreset,
@@ -79,13 +76,27 @@ function exposureChipText(ev: number, iso: number): string {
   return 'EXP';
 }
 
+/** Mount the engine only after hydration so its initial zoom uses saved settings. */
 export function CameraScreen() {
   const { settings, patch } = useSettings();
-  const settingsReady = settings !== null;
-  const profile = useDeviceProfile();
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  return settings ? <CameraScreenReady settings={settings} patch={patch} /> : <View style={styles.fillInk} />;
+}
 
-  const cam = useCamera({ settings: settings ?? DEFAULT_SETTINGS, patch, profile });
+function CameraScreenReady({ settings, patch }: {
+  settings: Settings;
+  patch: (partial: Partial<Settings>) => void;
+}) {
+  const profile = useDeviceProfile();
+  const zoomRange = zoomRangeForFacing(profile, settings.facing);
+  const [cameraPermission, requestCameraPermission, refreshCameraPermission] = useCameraPermissions();
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void refreshCameraPermission().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [refreshCameraPermission]);
+
+  const cam = useCamera({ settings, patch, profile });
   const insets = useSafeAreaInsets();
 
   const [showShots, setShowShots] = useState(false);
@@ -125,14 +136,18 @@ export function CameraScreen() {
   // Tap-to-focus on the viewfinder: single tap meters + locks AF/AE at the
   // point (brass ring), double tap still flips the camera. Exclusive taps give
   // the double-tap a ~300ms window; singles focus after it resolves.
+  // NOTE: this is persistent tap-to-meter, not a verified AE lock — the label
+  // below must not claim exposure is locked.
   const onFinderSingleTap = useCallback(
     (x: number, y: number) => {
       bump();
-      const s = settings ?? DEFAULT_SETTINGS;
-      const f = frameRect(getFraming(s.framing).aspect, bounds.w, bounds.h);
+      const f = frameRect(previewAspect(settings.mode, getFraming(settings.framing).aspect), bounds.w, bounds.h);
       if (f.w <= 0 || f.h <= 0) return;
-      const nx = (x - f.x) / f.w;
-      const ny = (y - f.y) / f.h;
+      // The gesture detector covers exactly the framed viewfinder (it is the
+      // absolutely-positioned child), so e.x/e.y are already frame-relative —
+      // subtracting the frame origin again double-offset every tap.
+      const nx = x / f.w;
+      const ny = y / f.h;
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return; // letterbox tap
       void Haptics.selectionAsync().catch(() => {});
       cam.focusAt(nx, ny);
@@ -186,22 +201,23 @@ export function CameraScreen() {
           runOnJS(onPinchBegin)();
         })
         .onUpdate((e) => {
-          const r = clampRatio(profile, baseZoom.value * e.scale);
+          const r = clampRatio(zoomRange, baseZoom.value * e.scale);
           runOnJS(onPinchUpdate)(r);
         })
         .onEnd(() => {
           runOnJS(onPinchEnd)();
         }),
-    [baseZoom, onPinchBegin, onPinchEnd, onPinchUpdate, profile],
+    [baseZoom, onPinchBegin, onPinchEnd, onPinchUpdate, zoomRange],
   );
 
-  if (!settingsReady || !settings || !cameraPermission) {
+  if (!cameraPermission) {
     return <View style={styles.fillInk} />;
   }
 
   if (!cameraPermission.granted) {
     return (
       <PermissionGate
+        canAskAgain={cameraPermission.canAskAgain}
         onEnable={() => {
           void requestCameraPermission();
         }}
@@ -210,7 +226,11 @@ export function CameraScreen() {
   }
 
   const activeFraming = getFraming(settings.framing);
-  const frame = frameRect(activeFraming.aspect, bounds.w, bounds.h);
+  // Preview contract: photo shows the native-aspect capture (FULL = 3:4 native
+  // portrait, not the whole screen); video shows the recorder's 9:16 output —
+  // recording is ungraded and uncropped, so no framing recipe veil is honest.
+  const preview = previewAspect(settings.mode, activeFraming.aspect);
+  const frame = frameRect(preview, bounds.w, bounds.h);
 
   return (
     <GestureHandlerRootView style={styles.fill}>
@@ -236,7 +256,7 @@ export function CameraScreen() {
               style={StyleSheet.absoluteFill}
               facing={settings.facing}
               flash={cam.flashProp}
-              zoom={ratioToNormalized(profile, cam.zoomRatio)}
+              zoom={ratioToNormalized(zoomRange, cam.zoomRatio)}
               enableTorch={cam.enableTorch}
               mirror={settings.facing === 'front' && settings.mirrorFront}
               mode={settings.mode === 'video' ? 'video' : 'picture'}
@@ -277,7 +297,7 @@ export function CameraScreen() {
           {/* capture-preset preview veils — instant feedback for the tonal recipe */}
           {/* live approximation of the CURRENT develop values (what a preset
               loaded or what the user set by hand) */}
-          {presetVeilLayers(settings.develop).map((layer, i) => (
+          {(settings.mode === 'photo' ? presetVeilLayers(settings.develop) : []).map((layer, i) => (
             <View
               key={`pv-${i}`}
               pointerEvents="none"
@@ -381,7 +401,7 @@ export function CameraScreen() {
               <FadeLabel tick={settings.edgeLight} text={EDGE_LABEL[settings.edgeLight] ?? ''} />
               <FadeLabel
                 tick={cam.focus?.key ?? 0}
-                text={cam.focus ? 'AF·AE LOCK' : ''}
+                text={cam.focus ? 'FOCUS / METERING' : ''}
                 ms={2200}
               />
               <FadeLabel
@@ -400,7 +420,14 @@ export function CameraScreen() {
               <View style={styles.modeSwitch} pointerEvents="box-none">
                 <Pressable
                   onPress={() => {
-                    if (!cam.recording && settings.mode !== 'photo') patch({ mode: 'photo' });
+                    // Mode switches are idle-only: they must not race a pending
+                    // capture, and an armed photo countdown must not survive
+                    // into video mode (its closure would grab a still frame).
+                    if (cam.phase !== 'ready') return;
+                    if (settings.mode !== 'photo') {
+                      cam.cancelCountdown();
+                      patch({ mode: 'photo' });
+                    }
                   }}
                   accessibilityRole="button"
                   accessibilityLabel="Photo mode"
@@ -417,7 +444,11 @@ export function CameraScreen() {
                 <View style={styles.modeSwitchDivider} />
                 <Pressable
                   onPress={() => {
-                    if (!cam.recording && settings.mode !== 'video') patch({ mode: 'video' });
+                    if (cam.phase !== 'ready') return;
+                    if (settings.mode !== 'video') {
+                      cam.cancelCountdown();
+                      patch({ mode: 'video' });
+                    }
                   }}
                   accessibilityRole="button"
                   accessibilityLabel="Video mode"
@@ -433,7 +464,7 @@ export function CameraScreen() {
                 </Pressable>
               </View>
 
-              {rulerMode === 'timer' ? (
+              {settings.mode === 'photo' && rulerMode === 'timer' ? (
                 <Ruler
                   min={0}
                   max={30}
@@ -445,7 +476,7 @@ export function CameraScreen() {
                   stepPx={26}
                 />
               ) : null}
-              {rulerMode === 'exposure' ? (
+              {settings.mode === 'photo' && rulerMode === 'exposure' ? (
                 <>
                   <Ruler
                     min={-2}
@@ -475,8 +506,8 @@ export function CameraScreen() {
               ) : null}
               {rulerMode === 'zoom' ? (
                 <Ruler
-                  min={profile.zoomMinRatio}
-                  max={profile.zoomMaxRatio}
+                  min={zoomRange.zoomMinRatio}
+                  max={zoomRange.zoomMaxRatio}
                   step={0.1}
                   value={cam.zoomRatio}
                   onChange={cam.setZoomRatio}
@@ -485,7 +516,7 @@ export function CameraScreen() {
                   stepPx={18}
                 />
               ) : null}
-              {rulerMode === 'aperture' ? (
+              {settings.mode === 'photo' && rulerMode === 'aperture' ? (
                 <Ruler
                   min={0}
                   max={APERTURE_STOPS.length - 1}
@@ -602,6 +633,7 @@ export function CameraScreen() {
                 <Thumbnail uri={cam.thumbUri} onPress={() => setShowShots(true)} />
                 <Pressable
                   style={[styles.earChip, earPicker === 'preset' && styles.earChipActive]}
+                  disabled={settings.mode === 'video'}
                   onPress={() => setEarPicker(earPicker === 'preset' ? null : 'preset')}
                   accessibilityRole="button"
                   accessibilityLabel="Capture preset"
@@ -627,6 +659,7 @@ export function CameraScreen() {
                 </View>
                 <Pressable
                   style={[styles.earChip, earPicker === 'sub' && styles.earChipActive]}
+                  disabled={settings.mode === 'video'}
                   onPress={() => setEarPicker(earPicker === 'sub' ? null : 'sub')}
                   accessibilityRole="button"
                   accessibilityLabel="Sub preset"
@@ -651,7 +684,7 @@ export function CameraScreen() {
                 fully decoupled from the bottom row so the shutter never moves.
                 A selection WRITES its recipe into the user's develop values —
                 a preset is a shortcut, not a hidden layer. */}
-            {earPicker !== null ? (
+            {settings.mode === 'photo' && earPicker !== null ? (
               <>
                 <Pressable
                   style={styles.backdrop}
@@ -691,12 +724,16 @@ export function CameraScreen() {
                                 <Pressable
                                   hitSlop={8}
                                   onPress={() => {
-                                    void deleteUserPreset(entry.user!.id).then(() => {
-                                      if (settings.preset === entry.id) {
-                                        patch({ preset: 'standard', presetSub: 'standard', develop: {} });
-                                      }
-                                      void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
-                                    });
+                                    void deleteUserPreset(entry.user!.id)
+                                      .then(() => {
+                                        if (settings.preset === entry.id) {
+                                          patch({ preset: 'standard', presetSub: 'standard', develop: {} });
+                                        }
+                                        void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
+                                      })
+                                      .catch(() => {
+                                        Alert.alert('Could not delete preset', 'Storage refused the write.');
+                                      });
                                   }}
                                   accessibilityRole="button"
                                   accessibilityLabel={`Delete ${entry.name}`}
@@ -728,18 +765,23 @@ export function CameraScreen() {
             ) : null}
 
             {/* manual develop controls — the real values presets load into */}
-            {showAdjust ? (
+            {settings.mode === 'photo' && showAdjust ? (
               <DevelopPanel
                 develop={settings.develop}
-                presetId={settings.preset}
-                presetSub={settings.presetSub}
                 onChange={(p) => patch({ develop: { ...settings.develop, ...p } })}
+                onReset={() =>
+                  patch({ develop: presetRecipe(settings.preset, settings.presetSub) })
+                }
                 onClose={() => setShowAdjust(false)}
                 onSavePreset={(name) => {
-                  void saveUserPreset(name, settings.develop).then((saved) => {
-                    patch({ preset: `user:${saved.id}`, presetSub: 'my' });
-                    void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
-                  });
+                  void saveUserPreset(name, settings.develop)
+                    .then((saved) => {
+                      patch({ preset: `user:${saved.id}`, presetSub: 'my' });
+                      void refreshUserPresets().then(() => setUserPresetsVersion((v) => v + 1));
+                    })
+                    .catch(() => {
+                      Alert.alert('Could not save preset', 'Storage refused the write.');
+                    });
                 }}
               />
             ) : null}
