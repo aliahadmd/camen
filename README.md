@@ -38,6 +38,12 @@ Grab the newest `Camen-vX.Y.Z.apk` from [Releases](../../releases), open it on
 your phone, and allow "Install unknown apps" when prompted. The APK is signed —
 keep installing newer releases over it.
 
+> **v1.17.0 note:** releases from v1.17.0 on are signed with a new key. If you
+> have v1.16.0 or older installed, uninstall it first — Android refuses an
+> update across signatures. Your shot archive lives in the app's own folder;
+> back up `Android/media`/the app's archive if you want to keep shots across
+> the reinstall.
+
 ## Build it yourself
 
 **Note:** the native portrait features (tap-to-focus/AF·AE lock, ML Kit depth
