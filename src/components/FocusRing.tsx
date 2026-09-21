@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet } from 'react-native';
+import { Animated, Pressable, StyleSheet, View } from 'react-native';
 
 import { colors } from '../theme';
 
@@ -44,34 +44,38 @@ export function FocusRing({
   const top = frame.y + y * frame.h - RING / 2;
 
   return (
-    <Animated.View
-      pointerEvents="box-none"
-      style={[
-        StyleSheet.absoluteFill,
-        { opacity, transform: [{ scale }], alignItems: 'center', justifyContent: 'center' },
-      ]}
-    >
-      <Pressable
-        onPress={onDismiss}
-        hitSlop={10}
-        accessibilityRole="button"
-        accessibilityLabel="Focus locked — tap to release"
-        style={[styles.ring, { left, top, position: 'absolute' }]}
-      >
-        <Animated.View style={styles.dot} />
-      </Pressable>
+    <Animated.View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+      {/* The ring itself animates: scaling the full-screen wrapper would slide
+          the whole coordinate space instead of scaling the ring in place. */}
+      <Animated.View style={[styles.ring, { left, top, opacity, transform: [{ scale }] }]}>
+        <Pressable
+          onPress={onDismiss}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Focus locked — tap to release"
+          style={StyleSheet.absoluteFill}
+        >
+          <View style={styles.dotWrap}>
+            <Animated.View style={styles.dot} />
+          </View>
+        </Pressable>
+      </Animated.View>
     </Animated.View>
   );
 }
 
 const styles = StyleSheet.create({
   ring: {
+    position: 'absolute',
     width: RING,
     height: RING,
     borderRadius: RING / 2,
     borderWidth: 1.5,
     borderColor: colors.brass,
     backgroundColor: 'rgba(11,12,14,0.12)',
+  },
+  dotWrap: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },

@@ -29,9 +29,13 @@ private const val MAX_DECODE_EDGE = 768
 private const val SEGMENT_TIMEOUT_MS = 20_000L
 // Retain at most one outstanding bitmap/task, including after a timeout.
 private val segmentationBusy = AtomicBoolean(false)
-private val cleanupExecutor = Executors.newSingleThreadExecutor { runnable ->
+private val cleanupExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
   Thread(runnable, "camen-vision-cleanup").apply { isDaemon = true }
 }
+// If the ML Kit Task never completes, its completion listener never runs —
+// this grace beyond the await timeout is the last chance to reclaim the
+// bitmap/segmenter and reopen the busy slot.
+private const val CLEANUP_GRACE_MS = 5_000L
 
 class CamenVisionModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -76,12 +80,18 @@ class CamenVisionModule : Module() {
         } finally {
           val ownedBitmap = bitmap
           val ownedSegmenter = segmenter
+          // Exactly-once cleanup: the completion listener and the force
+          // watchdog below may both fire.
+          var cleaned = false
           val cleanup = {
-            try {
-              ownedSegmenter?.close()
-            } finally {
-              ownedBitmap?.recycle()
-              segmentationBusy.set(false)
+            if (!cleaned) {
+              cleaned = true
+              try {
+                ownedSegmenter?.close()
+              } finally {
+                ownedBitmap?.recycle()
+                segmentationBusy.set(false)
+              }
             }
           }
           val pending = task
@@ -93,6 +103,14 @@ class CamenVisionModule : Module() {
             // it can still read InputImage. Registration also handles a task
             // completing between isComplete and addOnCompleteListener.
             pending.addOnCompleteListener(cleanupExecutor) { cleanup() }
+            // A Task that never completes would wedge segmentationBusy=true
+            // (every future call rejects E_SEGMENT_BUSY until restart) —
+            // schedule a force cleanup beyond the await timeout.
+            cleanupExecutor.schedule(
+              { cleanup() },
+              SEGMENT_TIMEOUT_MS + CLEANUP_GRACE_MS,
+              TimeUnit.MILLISECONDS,
+            )
           }
         }
       }

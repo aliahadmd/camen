@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { ArtifactScope, ProcessingQueue, withDeadline } from '../src/features/processingRuntime.ts';
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let release;
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+let release!: (value?: unknown) => void;
 let active = 0;
 let maximum = 0;
 const queue = new ProcessingQueue(10);
@@ -15,7 +15,7 @@ assert.equal(maximum, 1);
 await assert.rejects(withDeadline(new Promise(() => {}), 5, 'stage'), /stage timed out/);
 const files = new Set<string>();
 const scope = new ArtifactScope(async uri => { files.delete(uri); });
-let finish;
+let finish!: (value?: unknown) => void;
 const late = scope.run(async () => {
   scope.track('late.jpg');
   await new Promise(resolve => { finish = resolve; });

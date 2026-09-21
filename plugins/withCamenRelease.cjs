@@ -1,6 +1,10 @@
-const { withAppBuildGradle, withProjectBuildGradle } = require('expo/config-plugins');
+const { withAppBuildGradle, withProjectBuildGradle, withGradleProperties } = require('expo/config-plugins');
 
 const NDK_VERSION = '27.2.12479018';
+// Camen ships as a sideload for exactly one arm64 device — building all four
+// ABIs only bloats the APK (~40%). Overridable per build with
+// -PreactNativeArchitectures=...
+const TARGET_ARCHITECTURES = 'arm64-v8a';
 
 // SDK 57 Groovy templates have no static setting for release signing. Append a
 // managed DSL block rather than rewriting (or copying) existing credentials.
@@ -72,10 +76,27 @@ function patchAppGradle(contents) {
   return managedBlock(contents, 'camen-release', signingBody);
 }
 
+// withGradleProperties hands over parsed tokens ({ type, key?, value? }).
+function patchGradleProperties(props) {
+  const existing = props.find(
+    (item) => item.type === 'property' && item.key === 'reactNativeArchitectures',
+  );
+  if (existing) {
+    existing.value = TARGET_ARCHITECTURES;
+    return props;
+  }
+  props.push({ type: 'property', key: 'reactNativeArchitectures', value: TARGET_ARCHITECTURES });
+  return props;
+}
+
 function withCamenRelease(config) {
   config = withProjectBuildGradle(config, (mod) => {
     if (mod.modResults.language !== 'groovy') throw new Error('Camen release plugin requires an SDK 57 Groovy project build.gradle.');
     mod.modResults.contents = patchProjectGradle(mod.modResults.contents);
+    return mod;
+  });
+  config = withGradleProperties(config, (mod) => {
+    mod.modResults = patchGradleProperties(mod.modResults);
     return mod;
   });
   return withAppBuildGradle(config, (mod) => {
@@ -88,4 +109,5 @@ function withCamenRelease(config) {
 module.exports = withCamenRelease;
 module.exports.patchAppGradle = patchAppGradle;
 module.exports.patchProjectGradle = patchProjectGradle;
+module.exports.patchGradleProperties = patchGradleProperties;
 module.exports.NDK_VERSION = NDK_VERSION;

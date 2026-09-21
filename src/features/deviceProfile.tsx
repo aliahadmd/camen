@@ -9,6 +9,8 @@ export { clampRatio, ratioToNormalized, normalizedToRatio, zoomRangeForFacing } 
  * of this exact device (plan/hardware-report.md); the runtime probe verifies them.
  */
 export type DeviceProfile = {
+  /** Human-readable device identity — used for settings display and shot logs. */
+  name: string;
   hasBack: boolean;
   hasFront: boolean;
   backFlash: 'led' | 'screen' | 'none';
@@ -27,6 +29,7 @@ export type DeviceProfile = {
 
 /** Redmi K80 Pro (`miro`) — probed 2026-09-12, see plan/hardware-report.md. */
 export const REDMI_K80_PRO: DeviceProfile = {
+  name: 'Redmi K80 Pro',
   hasBack: true,
   hasFront: true,
   backFlash: 'led',
@@ -41,6 +44,7 @@ export const REDMI_K80_PRO: DeviceProfile = {
 
 /** Emulator / probe-failure profile: fully usable, minimal controls. */
 export const FALLBACK_PROFILE: DeviceProfile = {
+  name: 'Camen device',
   hasBack: true,
   hasFront: false,
   backFlash: 'led',

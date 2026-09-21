@@ -2,7 +2,7 @@
   "expo": {
     "name": "Camen",
     "slug": "camen",
-    "version": "1.16.0",
+    "version": "1.17.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0C0E",
@@ -36,7 +36,7 @@
         "monochrome": "./assets/monochrome.png",
         "backgroundColor": "#0B0C0E"
       },
-      "versionCode": 16,
+      "versionCode": 17,
       "allowBackup": false,
       "blockedPermissions": [
         "android.permission.READ_MEDIA_AUDIO",

@@ -9,3 +9,5 @@ keystore/
 /modules/*/android/.gradle/
 /modules/*/android/.cxx/
 *.apk
+*.jks
+*.keystore

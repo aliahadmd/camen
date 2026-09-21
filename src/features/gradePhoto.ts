@@ -6,7 +6,7 @@ import { rlog } from '../log';
 import { ArtifactScope, ProcessingQueue } from './processingRuntime';
 
 /** Cap the developed image's long edge — keeps JS processing in the 2–4s range. */
-const MAX_DIM = 2560;
+export const MAX_DIM = 2560;
 
 /**
  * Base color-grade descriptors. Since v1.12 the filter system is gone — this
@@ -569,7 +569,11 @@ export async function developPhoto(
   const hdr = options.hdr === true;
   const effective: PhotoGrade = {
     ...grade,
-    exposure: (grade.exposure ?? 0) + evBoost + (options.exposure ?? 0),
+    // ISO gain + EV + recipe exposure stack additively — clamp the sum to the
+    // develop range (±4) so stacked boosts can't run past the renderer's
+    // meaningful output.
+    exposure: Math.max(-4, Math.min(4,
+      (grade.exposure ?? 0) + evBoost + (options.exposure ?? 0))),
     contrast: (grade.contrast ?? 0) + (options.contrast ?? 0),
     shadows: (grade.shadows ?? 0) + (options.shadows ?? 0) + (hdr ? -0.3 : 0),
     highlights: (grade.highlights ?? 0) + (options.highlights ?? 0) + (hdr ? 0.3 : 0),

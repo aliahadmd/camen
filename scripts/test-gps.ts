@@ -5,15 +5,18 @@ import piexif from 'piexifjs';
 import { geotagJpeg } from '../src/features/gpsExif.ts';
 
 const encoded = jpeg.encode({ width: 2, height: 2, data: Buffer.from(Array(4).fill([120, 80, 40, 255]).flat()) }, 90);
-const original = `data:image/jpeg;base64,${encoded.data.toString('base64')}`;
+const original = `data:image/jpeg;base64,${Buffer.from(encoded.data).toString('base64')}`;
 const withExif = piexif.insert(piexif.dump({ '0th': { [piexif.ImageIFD.Make]: 'Camen fixture', [piexif.ImageIFD.Orientation]: 6 } }), original).split(',')[1];
 const coordinate = (parts: number[][], ref: string) =>
   (parts[0][0] / parts[0][1] + parts[1][0] / parts[1][1] / 60 + parts[2][0] / parts[2][1] / 3600) * (ref === 'S' || ref === 'W' ? -1 : 1);
 for (const [lat, lon] of [[23.8103, 90.4125], [-33.8688, -151.2093], [89.9999999, 179.9999999], [0, 0]]) {
   const result = geotagJpeg(withExif, lat, lon);
-  const read = piexif.load(`data:image/jpeg;base64,${result}`);
-  assert.ok(Math.abs(coordinate(read.GPS[piexif.GPSIFD.GPSLatitude], read.GPS[piexif.GPSIFD.GPSLatitudeRef]) - lat) < 0.000003);
-  assert.ok(Math.abs(coordinate(read.GPS[piexif.GPSIFD.GPSLongitude], read.GPS[piexif.GPSIFD.GPSLongitudeRef]) - lon) < 0.000003);
+  const read = piexif.load(`data:image/jpeg;base64,${result}`) as {
+    '0th': Record<string | number, unknown>;
+    GPS: Record<string | number, number[][] | string>;
+  };
+  assert.ok(Math.abs(coordinate(read.GPS[piexif.GPSIFD.GPSLatitude] as number[][], read.GPS[piexif.GPSIFD.GPSLatitudeRef] as string) - lat) < 0.000003);
+  assert.ok(Math.abs(coordinate(read.GPS[piexif.GPSIFD.GPSLongitude] as number[][], read.GPS[piexif.GPSIFD.GPSLongitudeRef] as string) - lon) < 0.000003);
   assert.equal(read['0th'][piexif.ImageIFD.Make], 'Camen fixture');
   assert.equal(read['0th'][piexif.ImageIFD.Orientation], 6);
   assert.deepEqual(jpeg.decode(Buffer.from(result, 'base64')).data, jpeg.decode(encoded.data).data);

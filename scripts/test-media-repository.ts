@@ -551,7 +551,9 @@ async function main() {
       assert.equal(files.length, 1);
       assert.equal(fs.readFileSync(path.join(dir, files[0])).compare(JPEG_HEAD), 0,
         'archived bytes must be the complete source, not the partial copy');
-      assert.equal(fs.existsSync(src), true, 'source survives');
+      // The replay is fully complete — the redundant cache source is reclaimed
+      // (its owning app instance is gone; the archive holds the pixels).
+      assert.equal(fs.existsSync(src), false, 'cache source reclaimed after completed recovery');
       assert.equal((await io.listDir(dir)).filter((n) => n.endsWith('.staging')).length, 0,
         'staging leftovers are consumed, never left behind');
       assert.equal(db.rows.size, 1);
@@ -609,8 +611,13 @@ async function main() {
         assert.equal(failed.completed.length, 0);
         assert.equal(failed.failed.length, 1);
         assert.equal(db2.rows.size, 0);
-        assert.equal(fs.readdirSync(dir2).some((n) => n.endsWith('.staging')), true,
-          'rejected staging is kept (never promoted, never destroyed)');
+        // A staging copy that can never be promoted is reclaimed (it only
+        // leaks inside the archive dir); the JOURNAL is kept so the failure
+        // stays visible and reported.
+        assert.equal(fs.readdirSync(dir2).some((n) => n.endsWith('.staging')), false,
+          'unpromotable staging is reclaimed from the archive dir');
+        assert.equal(fs.readdirSync(path.join(dir2, 'journals')).length, 1,
+          'the journal outlives the failed replay');
       } finally { fs.rmSync(root2, { recursive: true, force: true }); }
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
@@ -684,6 +691,96 @@ async function main() {
     assert.equal((await io.listDir(dir)).filter((n) => n.endsWith('.jpg')).length, 2);
 
     fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // ---- shared cache sources (AEB brackets) ----------------------------------
+  await ok('journals sharing one source: source survives until the LAST replay retires', async () => {
+    const root = tmpRoot();
+    try {
+      const dir = path.join(root, 'camen');
+      const io = makeNodeIO(root);
+      const db = makeMemoryDb();
+      const opts = { archiveDir: dir, journalDir: path.join(dir, 'journals') };
+      const src = path.join(root, 'aeb-shared.jpg');
+      fs.writeFileSync(src, JPEG_HEAD);
+
+      // AEB reality: three variants processed from ONE capture file. Bracket
+      // A crashed after its archive completed; bracket B crashed before any
+      // copy — its journal still points at the shared source. Each savePhoto
+      // restarts the stage sequence, so the save index advances on 'journal'.
+      const crashes: JournalStage[] = ['archived', 'journal'];
+      let saveIndex = 0;
+      const repo = createMediaRepository(io, db, {
+        ...opts,
+        injectCrash(stage) {
+          if (stage === 'journal') saveIndex++;
+          if (stage === crashes[saveIndex - 1]) throw new Error('simulated crash');
+        },
+      });
+      await assert.rejects(() =>
+        repo.savePhoto({ sourceUri: src, extension: 'jpg', meta: makeMeta(1710000000111) }));
+      await assert.rejects(() =>
+        repo.savePhoto({ sourceUri: src, extension: 'jpg', meta: makeMeta(1710000000222) }));
+
+      const report = await createMediaRepository(io, db, opts).recover();
+      assert.equal(report.completed.length, 2, JSON.stringify(report));
+      assert.equal(report.failed.length, 0);
+      // Both brackets indexed; the shared source is only reclaimed after the
+      // last referencing journal retired (the old unconditional delete
+      // stranded bracket B with "archive and source both missing").
+      assert.equal(db.rows.size, 2);
+      assert.equal(fs.existsSync(src), false, 'shared source reclaimed after the last replay');
+      assert.equal((await io.listDir(path.join(dir, 'journals'))).length, 0);
+      for (const row of db.rows.values()) {
+        assert.equal(fs.readFileSync(row.path).compare(JPEG_HEAD), 0);
+      }
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  await ok('shared source survives a partial replay: failed sibling still recovers next launch', async () => {
+    const root = tmpRoot();
+    try {
+      const dir = path.join(root, 'camen');
+      const io = makeNodeIO(root);
+      const db = makeMemoryDb();
+      const opts = { archiveDir: dir, journalDir: path.join(dir, 'journals') };
+      const src = path.join(root, 'aeb-partial.jpg');
+      fs.writeFileSync(src, JPEG_HEAD);
+
+      // Both brackets crash before any archive copy — both journals need the
+      // one source. The first replay must NOT consume it when the second
+      // replay fails transiently. Each savePhoto restarts the stage sequence,
+      // so the save index advances on 'journal'.
+      const crashes: JournalStage[] = ['journal', 'journal'];
+      let saveIndex = 0;
+      const repo = createMediaRepository(io, db, {
+        ...opts,
+        injectCrash(stage) {
+          if (stage === 'journal') saveIndex++;
+          if (stage === crashes[saveIndex - 1]) throw new Error('simulated crash');
+        },
+      });
+      await assert.rejects(() =>
+        repo.savePhoto({ sourceUri: src, extension: 'jpg', meta: makeMeta(1710000000333) }));
+      await assert.rejects(() =>
+        repo.savePhoto({ sourceUri: src, extension: 'jpg', meta: makeMeta(1710000000444) }));
+
+      // First launch: the DB goes down mid-replay — one journal retires, the
+      // other fails at index.
+      db.outage.until = Date.now() + 10_000;
+      const first = await createMediaRepository(io, db, opts).recover();
+      db.outage.until = 0;
+      assert.equal(first.completed.length, 0, 'both hit the outage');
+      assert.equal(first.failed.length, 2);
+      assert.equal(fs.existsSync(src), true, 'failed replays must not consume the shared source');
+
+      // Second launch: both journals replay — the source outlives the first
+      // retirement and is reclaimed only after the second one.
+      const second = await createMediaRepository(io, db, opts).recover();
+      assert.equal(second.completed.length, 2, JSON.stringify(second));
+      assert.equal(db.rows.size, 2);
+      assert.equal(fs.existsSync(src), false);
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 
   console.log(`\n${passed} tests passed`);

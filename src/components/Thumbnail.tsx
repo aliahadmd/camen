@@ -3,8 +3,8 @@ import { Image, Pressable, StyleSheet, View } from 'react-native';
 import { colors } from '../theme';
 
 /**
- * Last-shot thumbnail (bottom-left). Tap opens the photo via the system gallery
- * intent (content:// URI from MediaLibrary, read-grant flagged).
+ * Last-shot thumbnail (bottom-left). Tap opens the in-app SHOTS browser —
+ * the app-owned archive, not a gallery intent.
  */
 export function Thumbnail({
   uri,
@@ -18,7 +18,7 @@ export function Thumbnail({
     return <View style={styles.stub} />;
   }
   return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel="Open last photo">
+    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel="Open shots">
       <View style={[styles.stub, styles.border]}>
         <Image source={{ uri }} style={styles.img} />
       </View>

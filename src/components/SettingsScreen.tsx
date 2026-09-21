@@ -54,7 +54,7 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
 
   if (!settings) return null;
 
-  const facing = settings.facing === 'front' ? 'front' : 'back';
+  const facing = settings.facing;
   const [maxW, maxH] = profile.maxDims[facing];
   const statsMb = (stats.bytes / (1024 * 1024)).toFixed(0);
 
@@ -192,7 +192,7 @@ export function SettingsScreen({ onClose }: { onClose: () => void }) {
         <Text style={styles.section}>DEVICE</Text>
         <View style={styles.row}>
           <View style={styles.rowMain}>
-            <Text style={styles.rowTitle}>Redmi K80 Pro</Text>
+            <Text style={styles.rowTitle}>{profile.name}</Text>
             <Text style={styles.rowNote}>
               {profile.maxDims[facing][0]}×{profile.maxDims[facing][1]} ·{' '}
               {settings.facing === 'front' ? 'Screen flash' : 'LED + torch'}

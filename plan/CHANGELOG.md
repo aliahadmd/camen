@@ -1,5 +1,84 @@
 # Camen — CHANGELOG
 
+## 1.17.0 (2026-09-22) — full-audit fixes: recovery integrity, native guards, hygiene
+
+- **AEB shared-source recovery fixed (pass-2 regressions)**: AEB brackets
+  processed without development share one capture file, and both new pass-2
+  reclaim paths could delete it while sibling brackets or journals still
+  needed it. `saveShot` no longer deletes the capture file on a rerouted
+  failure (it throws `SaveReroutedError` and keeps the GPS journal source);
+  the capture loop reclaims rerouted files only after every variant has
+  saved; `recover()` ref-counts `sourceUri` across retained journals and
+  deletes a shared source only after the LAST referencing journal retires.
+  Two new recovery tests pin the contract (multi-journal shared source,
+  partial-replay retention).
+- **Bokeh-only develop no longer decodes the full sensor frame**: when the
+  tonal develop pass didn't run (bokeh-only look, or it failed) the portrait
+  depth pass now applies the same `MAX_DIM` downsize before JS pixel work —
+  previously a 4096×3072 decode with ~113 MB of planes (freeze/OOM risk).
+- **Failure-path hygiene**: keep-awake is deactivated if the screen unmounts
+  mid-countdown; `ArtifactScope.track` on a closed scope deletes immediately
+  and `close()` schedules one delayed re-sweep for late native writes; an
+  unpromotable `.staging` copy inside the archive dir is reclaimed (the
+  journal stays for the report); `refreshThumbnail` rejections are caught.
+- **Native guards**: the patched expo-camera null-guards `previewView.display`
+  before metering (detach race NPE), re-issues a pending focus lock when the
+  camera session reopens (facing/mode switches used to drop it silently), and
+  camen-vision schedules a force cleanup 5 s beyond the segmentation timeout
+  so a hung ML Kit task can no longer wedge `E_SEGMENT_BUSY` until restart.
+- **Preset/data integrity**: a corrupt user-preset blob is never overwritten
+  by an emptied list (writes refuse until the storage reads valid); preset
+  ids are validated against known presets at hydration (unknown ids coerce to
+  standard instead of grading neutral); burst saves reclaim rerouted capture
+  files too.
+- **UI fixes**: pinch-zoom base is now read on the UI thread via a shared
+  value (no more zoom lurch when JS loses the onBegin race); the focus ring
+  scales in place instead of sliding; deleting a shot splices the grid
+  instead of resetting to page 1 (delete errors now surface in an alert);
+  SHOTS/Settings can't be opened over an active recording (REC badge +
+  shutter stay reachable); video cells without a thumbnail render a real
+  placeholder; share MIME derives from one lowercased path.
+- **Hygiene**: `typescript` moved to devDependencies and `@types/node` added
+  so `tsc --noEmit` now covers `scripts/` too (test drift fixed: gps
+  round-trip casts, portrait-math/processing-runtime annotations);
+  `piexifjs.d.ts` declares `ImageIFD`/`ExifIFD`; dead `CapturedFrame.extras`
+  field, `idx_shots_created` index, and duplicate `gradePhoto` import
+  removed; `*.jks`/`*.keystore` gitignored; gradle.properties pins
+  `arm64-v8a` only (via the release plugin — ~40% smaller APKs);
+  E-segment-busy shows a "Portrait busy" toast; AEB toast reports the real
+  saved count; makeThumb fallback, settings flush double-write, stale
+  comments/labels fixed.
+- Patch regenerated against expo-camera 57.0.5 with the three native hunks
+  (`--exclude android/build/` so gradle build outputs never leak into it);
+  Kotlin verified via `:expo-camera:compileDebugKotlin` +
+  `:camen-vision:compileDebugKotlin`.
+
+### Included — audit-fix pass 2 (2026-09-19): failure-path hygiene, dependency honesty
+
+- **Cache-leak fixes**: a failed develop pass no longer strands the raw capture
+  (`capture` reclaims it in the outer catch); a mid-pipeline throw sweeps the
+  already-completed stages' artifact scopes; a failed archive keeps exactly the
+  journal's recovery source (a rerouted GPS copy) and deletes the redundant
+  original; failed variants now reclaim their intermediates via
+  `dispose(keep)`.
+- **Recovery reclaims its source**: a fully completed replay (verified pixels +
+  index + retired journal) deletes the redundant cache copy — recovered saves
+  no longer leak full-size JPEGs into the cache.
+- **AEB variants are geotagged** like the center shot instead of silently
+  dropping GPS EXIF and coordinates.
+- **Delete ordering**: SHOTS removal awaits the archive/thumb deletes before
+  dropping the SQLite row (no more row-without-file window); video share MIME
+  derives from the file extension.
+- **Dependency honesty**: `expo-file-system` is declared directly (the whole
+  save pipeline imports it; it only resolved transitively);
+  `expo-intent-launcher` (unused anywhere) is removed.
+- **Hardcoding cleanup**: device name now lives on `DeviceProfile` and feeds
+  both the settings row and the shot log; video quality is a named constant.
+- **Smaller fixes**: user presets hide the LOOK sub chip (a meaningless
+  `preset_sub` could be logged); pending settings writes flush on unmount
+  instead of being dropped; combined develop exposure clamps to ±4; stale
+  Thumbnail comment corrected; dead `shouldSyncRuler` export removed.
+
 ## 1.16.0 (2026-09-17) — Audit-fix pass (recovery, permissions, build config)
 
 - **Crash-safe archive**: every save now journals intent before pixels move

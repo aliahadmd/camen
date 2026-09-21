@@ -68,8 +68,10 @@ try {
       edge_light INTEGER NOT NULL DEFAULT 0,
       device TEXT
     );
-    CREATE INDEX IF NOT EXISTS idx_shots_created ON shots (created_at DESC);
   `);
+  // idx_shots_created (created_at) was dead weight — every query orders by id
+  // or filters by path. Drop it from databases created before this change.
+  db.execSync('DROP INDEX IF EXISTS idx_shots_created');
 
   // Column migrations, checked against the real schema instead of
   // try/catch-swallowing every ALTER failure (which also hid disk/corruption

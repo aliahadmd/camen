@@ -99,7 +99,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      let loaded = { ...DEFAULT_SETTINGS };
+      let loaded = { ...DEFAULT_SETTINGS, develop: {} };
       try {
         await refreshUserPresets();
         const raw = await AsyncStorage.getItem(STORAGE_KEY);
@@ -113,7 +113,18 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     })();
     return () => {
       alive = false;
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (saveTimer.current) {
+        // Flush the pending debounced write instead of dropping it — a change
+        // made in the last 300ms before teardown must still persist.
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+        const pending = latest.current;
+        if (pending) {
+          void AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(pending)).catch((e) => {
+            rlog('[camen] settings persist failed:', e);
+          });
+        }
+      }
     };
   }, []);
 
@@ -125,6 +136,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setSettings(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
       AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next)).catch((e) => {
         // Silent persistence failures made settings lie between launches.
         rlog('[camen] settings persist failed:', e);

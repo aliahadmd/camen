@@ -52,11 +52,6 @@ export function rulerOffset(value: number, min: number, step: number, stepPx: nu
   return rulerIndex((value - min) / step * stepPx, stepPx, count) * stepPx;
 }
 
-/** Ignore prop echoes while dragging/coasting, but sync even one-tick external changes. */
-export function shouldSyncRuler(interacting: boolean, current: number, target: number): boolean {
-  return !interacting && Math.abs(current - target) > 0.5;
-}
-
 export function permissionAction(canAskAgain: boolean): 'request' | 'settings' {
   return canAskAgain ? 'request' : 'settings';
 }

@@ -58,6 +58,8 @@ import { ShotsScreen } from './ShotsScreen';
 import { Thumbnail } from './Thumbnail';
 
 const FLASH_CYCLE = { auto: 'on', on: 'off', off: 'auto' } as const;
+/** The K80 Pro recorder's ceiling — exposed on CameraView, not user-selectable. */
+const VIDEO_QUALITY = '1080p' as const;
 const GRID_LABEL: Record<GridMode, string> = { off: 'Grid off', thirds: 'Thirds', golden: 'Golden' };
 const EDGE_LABEL = [
   'Edge light off',
@@ -170,17 +172,22 @@ function CameraScreenReady({ settings, patch }: {
   }, [onFinderDoubleTap, onFinderSingleTap]);
 
   // pinch zoom
-  const zoomRef = useRef(cam.zoomRatio);
-  zoomRef.current = cam.zoomRatio;
+  // Mirrored into a shared value so the pinch's onBegin worklet can read the
+  // current zoom on the UI thread — a JS-thread hop can lose the race against
+  // the first onUpdate frames and make the zoom lurch toward 1×.
+  const zoomShared = useSharedValue(cam.zoomRatio);
+  zoomShared.value = cam.zoomRatio;
   const baseZoom = useSharedValue(1);
   const [pinchActive, setPinchActive] = useState(false);
   const pinchHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (pinchHideTimer.current) clearTimeout(pinchHideTimer.current);
+  }, []);
   const onPinchBegin = useCallback(() => {
-    baseZoom.value = zoomRef.current;
     bump();
     setPinchActive(true);
     if (pinchHideTimer.current) clearTimeout(pinchHideTimer.current);
-  }, [bump, baseZoom]);
+  }, [bump]);
   const onPinchUpdate = useCallback(
     (r: number) => {
       cam.setZoomRatio(r);
@@ -198,6 +205,7 @@ function CameraScreenReady({ settings, patch }: {
     () =>
       Gesture.Pinch()
         .onBegin(() => {
+          baseZoom.value = zoomShared.value;
           runOnJS(onPinchBegin)();
         })
         .onUpdate((e) => {
@@ -207,7 +215,7 @@ function CameraScreenReady({ settings, patch }: {
         .onEnd(() => {
           runOnJS(onPinchEnd)();
         }),
-    [baseZoom, onPinchBegin, onPinchEnd, onPinchUpdate, zoomRange],
+    [baseZoom, zoomShared, onPinchBegin, onPinchEnd, onPinchUpdate, zoomRange],
   );
 
   if (!cameraPermission) {
@@ -260,7 +268,7 @@ function CameraScreenReady({ settings, patch }: {
               enableTorch={cam.enableTorch}
               mirror={settings.facing === 'front' && settings.mirrorFront}
               mode={settings.mode === 'video' ? 'video' : 'picture'}
-              videoQuality="1080p"
+              videoQuality={VIDEO_QUALITY}
               focusPointX={cam.focus?.x ?? 0.5}
               focusPointY={cam.focus?.y ?? 0.5}
               focusKey={cam.focus?.key ?? 0}
@@ -382,7 +390,11 @@ function CameraScreenReady({ settings, patch }: {
               <IconButton
                 icon="settings"
                 active={false}
-                onPress={() => setShowSettings(true)}
+                onPress={() => {
+                  // Recording must stay visible and stoppable — the full-screen
+                  // settings overlay would bury both the REC badge and shutter.
+                  if (!cam.recording) setShowSettings(true);
+                }}
                 accessibilityLabel="Settings"
               />
             </View>
@@ -630,7 +642,12 @@ function CameraScreenReady({ settings, patch }: {
               ) : null}
 
               <View style={styles.mainRow} pointerEvents="box-none">
-                <Thumbnail uri={cam.thumbUri} onPress={() => setShowShots(true)} />
+                <Thumbnail
+                  uri={cam.thumbUri}
+                  onPress={() => {
+                    if (!cam.recording) setShowShots(true);
+                  }}
+                />
                 <Pressable
                   style={[styles.earChip, earPicker === 'preset' && styles.earChipActive]}
                   disabled={settings.mode === 'video'}
@@ -659,7 +676,10 @@ function CameraScreenReady({ settings, patch }: {
                 </View>
                 <Pressable
                   style={[styles.earChip, earPicker === 'sub' && styles.earChipActive]}
-                  disabled={settings.mode === 'video'}
+                  // User presets have no subs — the LOOK chip only applies to
+                  // built-in presets; showing Standard's sub list under a
+                  // user preset would log a meaningless preset_sub.
+                  disabled={settings.mode === 'video' || isUserPresetId(settings.preset)}
                   onPress={() => setEarPicker(earPicker === 'sub' ? null : 'sub')}
                   accessibilityRole="button"
                   accessibilityLabel="Sub preset"
@@ -924,7 +944,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.s,
   },
-  filterName: { alignSelf: 'center' },
   isoRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',

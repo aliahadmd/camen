@@ -20,7 +20,7 @@ import {
 } from '../src/features/portraitMath.ts';
 
 let passed = 0;
-function ok(name, fn) {
+function ok(name: string, fn: () => void) {
   fn();
   passed++;
   console.log('  ok —', name);
@@ -129,11 +129,11 @@ ok('proximity is higher next to the subject than far away', () => {
 });
 
 ok('far band destroys the background checkerboard, near band softens it', () => {
-  const variance = (arr) => {
+  const variance = (arr: ArrayLike<number>) => {
     let varSum = 0;
     // sample a clean bg strip: left of the subject (x<20) and well below the
     // specular block (y>8) so blur bleed-in from either can't dominate
-    const vals = [];
+    const vals: number[] = [];
     for (let y = 30; y < 40; y++) for (let x = 2; x < 10; x++) vals.push(arr[y * 64 + x]);
     const mean = vals.reduce((a, v) => a + v, 0) / vals.length;
     for (const v of vals) varSum += (v - mean) ** 2;
@@ -194,7 +194,7 @@ ok('composite keeps subject pixels exact and blurs the far background', () => {
   }
   compositePortrait(data, w, h, layers, 0);
 
-  const px = (x, y) => {
+  const px = (x: number, y: number) => {
     const i = (y * w + x) * 4;
     return [data[i], data[i + 1], data[i + 2]];
   };
@@ -246,7 +246,7 @@ ok('bgTone < 0 darkens the background without touching the subject', () => {
 ok('glow bleeds energy into the blurred background near highlights', () => {
   const w = 128;
   const h = 128;
-  const paint = (glowAmount) => {
+  const paint = (glowAmount: number) => {
     const data = new Uint8Array(w * h * 4);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {

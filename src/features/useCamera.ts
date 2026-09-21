@@ -13,13 +13,12 @@ import * as VideoThumbnails from 'expo-video-thumbnails';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { clampRatio, zoomRangeForFacing, type DeviceProfile } from './deviceProfile';
-import { cropToAspect, developPhoto } from './gradePhoto';
+import { cropToAspect, developPhoto, MAX_DIM, queuedManipulate } from './gradePhoto';
 import { getFraming } from './framings';
 import { injectGpsExif } from './geotag';
 import { applyPortraitDepth } from './portraitDepth';
 import { getSelfieMask, type DepthMask } from './vision';
 import { latestShot } from '../data/db';
-import { queuedManipulate } from './gradePhoto';
 import { developKey, isCustomDevelop, isUserPresetId, presetRecipe } from './presets';
 import { rlog } from '../log';
 import type { Settings } from './settings';
@@ -54,12 +53,27 @@ type CapturedFrame = {
   height: number;
   /** EXIF orientation of the source file (jpeg-js ignores it — see processCapture). */
   orientation?: number;
-  /** Cache files created while processing that the caller should delete after archiving. */
-  extras?: string[];
-  dispose?: () => Promise<void>;
+  /**
+   * Closes every processing scope, deleting the intermediates they tracked.
+   * URIs listed in `keep` survive — used on save failure to preserve the file
+   * a journal still points at for recovery.
+   */
+  dispose?: (keep?: readonly string[]) => Promise<void>;
   /** True when the portrait depth pass actually ran (logged honestly to SQLite). */
   bokehApplied?: boolean;
 };
+
+/**
+ * Thrown when a failed save kept a rerouted recovery source (the GPS copy):
+ * the journal no longer points at the capture file, so the caller may reclaim
+ * it once no sibling AEB variant still reads it. The capture file itself is
+ * NEVER deleted inside saveShot — AEB brackets can share one file.
+ */
+class SaveReroutedError extends Error {
+  constructor(journalSource: string, cause: unknown) {
+    super(`save failed; recovery source rerouted to ${journalSource} (${String(cause)})`);
+  }
+}
 
 /**
  * The camera engine: capture state machine, flash/torch, EV, anti-shake,
@@ -167,7 +181,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   const makeThumb = useCallback(async (src: string): Promise<string> => {
     const dir = `${FileSystem.documentDirectory}camen/thumbs`;
     await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-    const name = src.split('/').pop() ?? `t${Date.now()}`;
+    const name = src.split('/').pop() || `t${Date.now()}`;
     const dest = `${dir}/${name}.jpg`;
     const scope = new ArtifactScope((uri) => FileSystem.deleteAsync(uri, { idempotent: true }));
     try {
@@ -206,6 +220,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       if (intervalRef.current) clearInterval(intervalRef.current);
       if (toastTimer.current) clearTimeout(toastTimer.current);
       if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
+      // Unmounting mid-countdown must not leave the screen awake forever.
+      KeepAwake.deactivateKeepAwake();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -229,9 +245,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
   // ---- capture pipeline -----------------------------------------------------
   /**
    * Orientation upright → framing crop → filter grade + preset recipe develop →
-   * portrait depth bokeh → format conversion. Every cache file created along the
-   * way that is not the returned final is listed in `extras` so the caller can
-   * reclaim the cache after archiving (the final itself is moved into the archive).
+   * portrait depth bokeh → format conversion. Every intermediate lives in an
+   * ArtifactScope owned by the returned `dispose` — the caller closes it after
+   * archiving, keeping any URI a failed-save journal still points at.
    * `maskRef` lets AEB variants of one capture share a single segmentation —
    * same geometry, same person.
    */
@@ -256,72 +272,124 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       };
       let current = { uri: photo.uri, width: photo.width, height: photo.height };
       let oriented = true;
-      if (photo.orientation && photo.orientation !== 1) {
-        try {
-          // Glide applies all EXIF orientations while loading; do not rotate twice.
-          current = await stage((scope) => queuedManipulate(() => scope.run(async () => {
-            const out = await ImageManipulator.manipulateAsync(photo.uri, [], {
-              compress: 0.95, format: ImageManipulator.SaveFormat.JPEG,
-            });
-            scope.track(out.uri);
-            return out;
-          })));
-        } catch (error) {
-          oriented = false;
-          rlog('[camen] orientation unavailable, preserving original:', error);
-        }
-      }
       let bokehApplied = false;
-      const recipe = settings.develop;
-      const options = { ...recipe, ev: evOffset, iso: settings.iso };
-      if (oriented) {
-        const framing = getFraming(settings.framing);
-        if (framing.aspect) {
+      try {
+        if (photo.orientation && photo.orientation !== 1) {
           try {
-            const input = current;
-            current = await stage((scope) => cropToAspect(input.uri, input.width, input.height,
-              framing.aspect, framing.maxLongEdge, scope));
-          } catch (error) { rlog('[camen] crop unavailable:', error); }
-        }
-        if (hasEffectiveDevelop(options)) {
-          setProcessing(true);
-          try {
-            const input = current;
-            current = await stage((scope) => developPhoto(input.uri, input.width, input.height, {}, options, scope));
-          } catch (error) { rlog('[camen] develop unavailable, preserving capture:', error); }
-          finally { setProcessing(false); }
-        }
-        if ((recipe.bokeh ?? 0) > 0) {
-          setProcessing(true);
-          try {
-            const input = current;
-            const provider = () => {
-              if (!maskRef) return getSelfieMask(input.uri);
-              if (!maskRef.promise) maskRef.promise = getSelfieMask(input.uri);
-              return maskRef.promise;
-            };
-            const out = await stage((scope) => applyPortraitDepth(input.uri, provider, {
-              bokeh: recipe.bokeh!, bokehGlow: recipe.bokehGlow ?? recipe.bokeh! * 0.45,
-              bgTone: recipe.bgTone ?? 0,
-            }, scope));
-            if (out) { current = out; bokehApplied = true; }
-          } catch (error) { rlog('[camen] portrait unavailable:', error); }
-          finally { setProcessing(false); }
-        }
-        if (settings.format === 'webp') {
-          try {
-            const input = current;
+            // Glide applies all EXIF orientations while loading; do not rotate twice.
             current = await stage((scope) => queuedManipulate(() => scope.run(async () => {
-              const out = await ImageManipulator.manipulateAsync(input.uri, [], {
-                compress: 0.9, format: ImageManipulator.SaveFormat.WEBP,
+              const out = await ImageManipulator.manipulateAsync(photo.uri, [], {
+                compress: 0.95, format: ImageManipulator.SaveFormat.JPEG,
               });
               scope.track(out.uri);
               return out;
             })));
-          } catch (error) { rlog('[camen] WebP unavailable:', error); }
+          } catch (error) {
+            oriented = false;
+            rlog('[camen] orientation unavailable, preserving original:', error);
+          }
         }
+        const recipe = settings.develop;
+        const options = { ...recipe, ev: evOffset, iso: settings.iso };
+        if (oriented) {
+          const framing = getFraming(settings.framing);
+          if (framing.aspect) {
+            try {
+              const input = current;
+              current = await stage((scope) => cropToAspect(input.uri, input.width, input.height,
+                framing.aspect, framing.maxLongEdge, scope));
+            } catch (error) { rlog('[camen] crop unavailable:', error); }
+          }
+          let developed = false;
+          if (hasEffectiveDevelop(options)) {
+            setProcessing(true);
+            try {
+              const input = current;
+              current = await stage((scope) => developPhoto(input.uri, input.width, input.height, {}, options, scope));
+              developed = true;
+            } catch (error) { rlog('[camen] develop unavailable, preserving capture:', error); }
+            finally { setProcessing(false); }
+          }
+          if ((recipe.bokeh ?? 0) > 0) {
+            setProcessing(true);
+            try {
+              let input = current;
+              // The tonal develop pass downsizes to MAX_DIM before any JS
+              // pixel work. When it didn't run (bokeh-only look) or failed,
+              // resize here — the depth pass otherwise decodes the full
+              // sensor frame (~113MB of planes on the K80 Pro).
+              if (!developed && Math.max(input.width, input.height) > MAX_DIM) {
+                input = await stage((scope) => queuedManipulate(() => scope.run(async () => {
+                  const out = await ImageManipulator.manipulateAsync(
+                    input.uri,
+                    [
+                      input.width >= input.height
+                        ? { resize: { width: MAX_DIM } }
+                        : { resize: { height: MAX_DIM } },
+                    ],
+                    { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG },
+                  );
+                  scope.track(out.uri);
+                  return out;
+                })));
+              }
+              const provider = () => {
+                if (!maskRef) return getSelfieMask(input.uri);
+                if (!maskRef.promise) maskRef.promise = getSelfieMask(input.uri);
+                return maskRef.promise;
+              };
+              const out = await stage((scope) => applyPortraitDepth(input.uri, provider, {
+                bokeh: recipe.bokeh!, bokehGlow: recipe.bokehGlow ?? recipe.bokeh! * 0.45,
+                bgTone: recipe.bgTone ?? 0,
+              }, scope));
+              if (out) { current = out; bokehApplied = true; }
+            } catch (error) {
+              const code = (error as { code?: string } | null)?.code;
+              const busy =
+                code === 'E_SEGMENT_BUSY' ||
+                (error instanceof Error && error.message.includes('E_SEGMENT_BUSY'));
+              if (busy) {
+                // A previous shot is still segmenting — degrade to an
+                // un-blurred capture, but never silently.
+                rlog('[camen] portrait busy, saved without bokeh:', error);
+                showToast('Portrait busy — saved without blur');
+              } else {
+                rlog('[camen] portrait unavailable:', error);
+              }
+            }
+            finally { setProcessing(false); }
+          }
+          if (settings.format === 'webp') {
+            try {
+              const input = current;
+              current = await stage((scope) => queuedManipulate(() => scope.run(async () => {
+                const out = await ImageManipulator.manipulateAsync(input.uri, [], {
+                  compress: 0.9, format: ImageManipulator.SaveFormat.WEBP,
+                });
+                scope.track(out.uri);
+                return out;
+              })));
+            } catch (error) { rlog('[camen] WebP unavailable:', error); }
+          }
+        }
+      } catch (error) {
+        // A mid-pipeline throw leaves the already-completed stages' scopes
+        // unclosed (the failing stage closed its own) — sweep them now or the
+        // captured originals leak into the cache.
+        await Promise.all(scopes.map((scope) => scope.close().catch(() => {})));
+        throw error;
       }
-      return { ...current, bokehApplied, dispose: async () => { await Promise.all(scopes.map((scope) => scope.close())); } };
+      return {
+        ...current,
+        bokehApplied,
+        dispose: async (keep: readonly string[] = []) => {
+          const keepSet = new Set(keep);
+          await Promise.all(scopes.map(async (scope) => {
+            for (const uri of keepSet) scope.retain(uri);
+            await scope.close();
+          }));
+        },
+      };
     },
     [settings.develop, settings.framing, settings.format, settings.iso],
   );
@@ -380,8 +448,12 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           rlog('[camen] GPS EXIF unavailable, preserving capture:', error);
         }
       }
-      // A failed archive keeps its GPS source for journal recovery.
-      const { path } = await repo.savePhoto({ sourceUri: archiveSource, extension: ext, meta: {
+      // A failed archive keeps its recovery source (the journal's GPS copy
+      // when one was made, otherwise the capture file itself) — reclaiming
+      // anything else is the capture loop's call, after ALL variants saved.
+      let path: string;
+      try {
+        path = (await repo.savePhoto({ sourceUri: archiveSource, extension: ext, meta: {
           created_at: Date.now(),
           filter_id: 'none', // filter system removed in v1.12
           facing,
@@ -391,7 +463,7 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           zoom_ratio: zoomRatio,
           timer_seconds: settings.timerSeconds,
           edge_light: settings.edgeLight,
-          device: 'Redmi K80 Pro',
+          device: profile.name,
           framing: meta.raw ? 'full' : settings.framing,
           preset_id: loggedPreset,
           preset_sub: meta.raw ? 'standard' : settings.presetSub,
@@ -404,7 +476,20 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           media_type: media.mediaType,
           duration_ms: media.durationMs ?? null,
           bokeh: meta.raw ? null : shot.bokehApplied ? settings.develop.bokeh ?? null : null,
-      } });
+      } })).path;
+      } catch (error) {
+        if (archiveSource !== shot.uri) {
+          // The journal points at the GPS copy — keep it for recovery. The
+          // capture file itself must NOT be deleted here: with AEB the other
+          // brackets may still save from this very file. The caller decides
+          // after the whole save loop (SaveReroutedError).
+          gpsScope.retain(archiveSource);
+          await gpsScope.close();
+          throw new SaveReroutedError(archiveSource, error);
+        }
+        await gpsScope.close();
+        throw error;
+      }
       await gpsScope.close();
       const optionalAssets = async () => {
         let thumbPath = '';
@@ -427,11 +512,13 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       if (!meta.aeb) showToast('Saved');
       setSaveError(false);
-      void refreshThumbnail();
+      // DB init failures make latestShot() throw — never an unhandled rejection.
+      void refreshThumbnail().catch((error) => rlog('[camen] thumbnail refresh failed:', error));
     },
     [
       facing,
       makeThumb,
+      profile,
       refreshThumbnail,
       settings.develop,
       settings.edgeLight,
@@ -523,6 +610,8 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
     phaseRef.current = 'capturing';
     setPhase('capturing');
     let useScreenFlash = false;
+    // Hoisted so the failure catch can reclaim the raw capture file.
+    let capturedUri: string | null = null;
     try {
       // Anti-shake FIRST — the screen flash must never blind the user for the
       // whole steady-wait (up to 4s).
@@ -553,8 +642,9 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       setPhase('saving');
 
       const coords = await fetchCoords();
+      capturedUri = photo.uri;
       const frame: CapturedFrame = {
-        uri: photo.uri,
+        uri: capturedUri,
         width: photo.width ?? 0,
         height: photo.height ?? 0,
         orientation: (photo.exif as { Orientation?: number } | undefined)?.Orientation,
@@ -580,26 +670,47 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
 
       // Archive everything, then reclaim the cache (original + intermediates).
-      // Archived finals were moved away; deleteAsync is idempotent anyway.
-      // Each variant saves in its own try — one failed insert must not abort
-      // the remaining AEB brackets (they were already captured and processed).
+      // The repository COPIES sources into the archive, so this delete is a
+      // pure cache reclaim (deleteAsync is idempotent anyway). Each variant
+      // saves in its own try — one failed insert must not abort the remaining
+      // AEB brackets (they were already captured and processed).
       const retained = new Set<string>();
+      const rerouted = new Set<string>();
       let savedCount = 0;
       let saveFailed = false;
       try {
         for (const r of results) {
           try {
-            await saveShot(r.shot, r.meta.aeb ? null : coords, r.meta);
+            // AEB brackets are geotagged like the center shot — a failed EXIF
+            // pass on one variant must not silently untag the other two.
+            await saveShot(r.shot, coords, r.meta);
             savedCount++;
             await r.shot.dispose?.();
             if (r.shot.uri !== frame.uri) void FileSystem.deleteAsync(r.shot.uri, { idempotent: true }).catch(() => {});
           } catch (e) {
-            retained.add(r.shot.uri);
+            if (e instanceof SaveReroutedError) {
+              // The journal points at a rerouted GPS copy — this variant's
+              // capture file is redundant, BUT only after the remaining
+              // brackets had their chance to save from it (they share it
+              // when no processing stage ran). Reclaim after the loop.
+              rerouted.add(r.shot.uri);
+            } else {
+              retained.add(r.shot.uri);
+            }
             rlog('[camen] save failed:', e);
             saveFailed = true;
+            // Reclaim this variant's intermediates, but keep the shot file
+            // itself: an unarchived save leaves a journal that still points
+            // at it for recovery.
+            await r.shot.dispose?.([r.shot.uri]);
           }
         }
-        if (settings.aeb && savedCount === 3) showToast('AEB ×3 saved');
+        // Rerouted capture files are only reclaimed once nothing else reads
+        // them: a still-retained URI belongs to a failed non-rerouted save.
+        for (const uri of rerouted) {
+          if (!retained.has(uri)) void FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+        }
+        if (settings.aeb && savedCount > 1) showToast(`AEB ×${savedCount} saved`);
         if (saveFailed) {
           setSaveError(true);
           showToast('Save failed');
@@ -609,6 +720,11 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
       }
     } catch (e) {
       rlog('[camen] capture failed:', e);
+      // The archive loop never ran, so nothing here is a recovery source —
+      // reclaim the raw capture file too.
+      if (typeof capturedUri === 'string') {
+        void FileSystem.deleteAsync(capturedUri, { idempotent: true }).catch(() => {});
+      }
       showToast('Capture failed');
     } finally {
       if (useScreenFlash) setScreenFlashArmed(false);
@@ -743,6 +859,11 @@ export function useCamera({ settings, patch, profile }: UseCameraArgs) {
           void FileSystem.deleteAsync(frame.uri, { idempotent: true }).catch(() => {});
         } catch (e) {
           rlog('[camen] burst save failed:', e);
+          // A rerouted failure keeps its GPS journal source; this capture
+          // file is not shared (bursts never AEB) and can go right away.
+          if (e instanceof SaveReroutedError) {
+            void FileSystem.deleteAsync(frame.uri, { idempotent: true }).catch(() => {});
+          }
           setSaveError(true);
         }
       }

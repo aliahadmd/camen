@@ -1,5 +1,6 @@
 import type { Settings } from './settings';
 import type { DevelopOptions } from './gradePhoto';
+import { CAPTURE_PRESETS, isUserPresetId } from './presets';
 import { isRecord, sanitizeDevelopOptions } from './developValidation';
 
 export function loadSettingsValue(value: unknown, defaults: Settings, recipe: (preset: string, sub: string) => DevelopOptions): Settings {
@@ -23,6 +24,14 @@ export function loadSettingsValue(value: unknown, defaults: Settings, recipe: (p
   }
   for (const key of ['preset', 'presetSub'] as const) {
     if (typeof raw[key] === 'string' && raw[key].length > 0) out[key] = raw[key];
+  }
+  // A preset id that doesn't resolve (corrupt write, deleted builtin) must not
+  // survive hydration: it grades neutral and logs a preset that doesn't exist.
+  // User presets keep the `user:` prefix — their existence is checked at use.
+  const presetIds = new Set(CAPTURE_PRESETS.map((p) => p.id));
+  if (!isUserPresetId(out.preset) && !presetIds.has(out.preset)) {
+    out.preset = 'standard';
+    out.presetSub = 'standard';
   }
   let develop: unknown = raw.develop;
   if (!Object.hasOwn(raw, 'develop')) {

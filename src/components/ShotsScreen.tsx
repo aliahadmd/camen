@@ -44,6 +44,8 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
     void refreshUserPresets().then(() => bumpVersion((v) => v + 1));
   }, []);
   const [tab, setTab] = useState<Tab>('all');
+  // Bumping `version` refreshes the header COUNT only — the grid itself is
+  // spliced on delete so a user scrolled pages deep keeps their place.
   const [version, setVersion] = useState(0);
   const [viewing, setViewing] = useState<ShotRow | null>(null);
   const [shots, setShots] = useState<ShotRow[]>([]);
@@ -71,7 +73,7 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     loadPage();
-  }, [loadPage, version]);
+  }, [loadPage]);
 
   const total = useMemo(() => {
     try {
@@ -91,19 +93,30 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
           text: 'Delete',
           style: 'destructive',
           onPress: () => {
-            void FileSystem.deleteAsync(shot.path, { idempotent: true }).catch(() => {});
-            if (shot.thumb_path) {
-              void FileSystem.deleteAsync(shot.thumb_path, { idempotent: true }).catch(() => {});
-            }
-            if (shot.gallery_uri) {
-              // Best-effort: deleting the MediaStore asset can be refused by
-              // the system on another app's behalf — the archive copy is gone
-              // regardless, so never block the row delete on it.
-              void MediaLibrary.deleteAssetsAsync([shot.gallery_uri]).catch(() => {});
-            }
-            deleteShot(shot.id);
-            setViewing(null);
-            setVersion((v) => v + 1);
+            // File deletes are awaited BEFORE the row delete: dying in between
+            // would otherwise leave an indexed row pointing at nothing. The
+            // gallery export stays best-effort (the system may refuse it on
+            // another app's behalf) and never blocks the archive delete.
+            void (async () => {
+              try {
+                await FileSystem.deleteAsync(shot.path, { idempotent: true }).catch(() => {});
+                if (shot.thumb_path) {
+                  await FileSystem.deleteAsync(shot.thumb_path, { idempotent: true }).catch(() => {});
+                }
+                if (shot.gallery_uri) {
+                  void MediaLibrary.deleteAssetsAsync([shot.gallery_uri]).catch(() => {});
+                }
+                deleteShot(shot.id);
+                setViewing(null);
+                // Splice the row out instead of reloading — deleting from the
+                // detail view must not reset a deep-scrolled grid to page 1.
+                setShots((prev) => prev.filter((s) => s.id !== shot.id));
+                setVersion((v) => v + 1);
+              } catch (e) {
+                Alert.alert('Could not delete shot', 'The storage layer refused the write.');
+                console.error('[camen] shot delete failed:', e);
+              }
+            })();
           },
         },
       ],
@@ -177,11 +190,19 @@ export function ShotsScreen({ onClose }: { onClose: () => void }) {
               accessibilityRole="button"
               accessibilityLabel={item.media_type === 'video' ? `Video ${item.id}` : `Shot ${item.id}`}
             >
-              <Image
-                source={{ uri: item.thumb_path || item.path }}
-                style={styles.thumb}
-                resizeMode="cover"
-              />
+              {item.media_type === 'video' && !item.thumb_path ? (
+                // A video path can never decode in an <Image> — show a real
+                // placeholder instead of a blank cell.
+                <View style={[styles.thumb, styles.thumbPlaceholder]}>
+                  <Ionicons name="videocam-outline" size={22} color={colors.muted} />
+                </View>
+              ) : (
+                <Image
+                  source={{ uri: item.thumb_path || item.path }}
+                  style={styles.thumb}
+                  resizeMode="cover"
+                />
+              )}
               {item.media_type === 'video' ? (
                 <View style={styles.vidTag} pointerEvents="none">
                   <Ionicons name="play" size={10} color={colors.bone} />
@@ -234,11 +255,14 @@ function ShotDetail({
       if (!(await Sharing.isAvailableAsync())) return;
       // The mime must match the actual file — a WebP announced as JPEG
       // confuses receiving apps.
-      const photoMime = shot.path.toLowerCase().endsWith('.webp')
-        ? 'image/webp'
-        : 'image/jpeg';
+      const lowerPath = shot.path.toLowerCase();
+      const videoMime = lowerPath.endsWith('.mov')
+        ? 'video/quicktime'
+        : lowerPath.endsWith('.webm')
+          ? 'video/webm'
+          : 'video/mp4';
       await Sharing.shareAsync(shot.path, {
-        mimeType: isVideo ? 'video/mp4' : photoMime,
+        mimeType: isVideo ? videoMime : lowerPath.endsWith('.webp') ? 'image/webp' : 'image/jpeg',
         dialogTitle: 'Share shot',
       });
     } catch {
@@ -386,6 +410,10 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
     backgroundColor: colors.panel,
+  },
+  thumbPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   vidTag: {
     position: 'absolute',

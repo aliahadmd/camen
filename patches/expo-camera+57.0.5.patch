@@ -22,7 +22,7 @@ index 21382f8..0741b60 100644
          ratio?.let {
            if (view.ratio != it) {
 diff --git a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
-index 999a22c..c028ace 100644
+index 999a22c..89e1a2a 100644
 --- a/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
 +++ b/node_modules/expo-camera/android/src/main/java/expo/modules/camera/ExpoCameraView.kt
 @@ -180,6 +180,27 @@ class ExpoCameraView(
@@ -53,7 +53,18 @@ index 999a22c..c028ace 100644
    var videoQuality: VideoQuality = VideoQuality.VIDEO1080P
      set(value) {
        field = value
-@@ -637,17 +658,32 @@ class ExpoCameraView(
+@@ -630,24 +651,42 @@ class ExpoCameraView(
+ 
+   private fun startFocusMetering() {
+     camera?.let {
++      // The preview can detach between the post{} deferral and this call —
++      // a null display would throw inside DisplayOrientedMeteringPointFactory.
++      val display = previewView.display ?: return
+       val meteringPointFactory = DisplayOrientedMeteringPointFactory(
+-        previewView.display,
++        display,
+         it.cameraInfo,
+         previewView.width.toFloat(),
          previewView.height.toFloat()
        )
        val action = FocusMeteringAction.Builder(
@@ -90,6 +101,17 @@ index 999a22c..c028ace 100644
      camera?.cameraControl?.setZoomRatio(targetZoomRatio)
    }
  
+@@ -657,6 +696,10 @@ class ExpoCameraView(
+         CameraState.Type.OPEN -> {
+           onCameraReady(Unit)
+           setTorchEnabled(enableTorch)
++          // Camen patch: a session recreate (facing/mode switch) silently
++          // drops a pending focus lock — re-issue the metering on the fresh
++          // camera so the JS-side ring matches reality.
++          if (focusKey > 0) post { startFocusMetering() }
+         }
+ 
+         else -> {}
 diff --git a/node_modules/expo-camera/build/Camera.types.d.ts b/node_modules/expo-camera/build/Camera.types.d.ts
 index 0ee50ec..afa0eaf 100644
 --- a/node_modules/expo-camera/build/Camera.types.d.ts

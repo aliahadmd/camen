@@ -43,7 +43,13 @@ export class ArtifactScope {
   private readonly remove: (uri: string) => Promise<unknown>;
   constructor(remove: (uri: string) => Promise<unknown>) { this.remove = remove; }
 
-  track = (uri: string): void => { this.files.add(uri); };
+  track = (uri: string): void => {
+    this.files.add(uri);
+    // A timed-out job that keeps working can only surface files after the
+    // scope closed — reclaim them right away instead of waiting for the
+    // delayed sweep below.
+    if (this.closed) void this.remove(uri).catch(() => {});
+  };
   retain = (uri: string): void => { this.files.delete(uri); };
 
   assertOpen(): void {
@@ -61,7 +67,13 @@ export class ArtifactScope {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
     this.closed = true;
     await this.sweep();
+    // Files written by timed-out native work can land after the sweep — one
+    // delayed pass reclaims those late outputs. unref'd so Node test runners
+    // don't wait on it (no-op on Hermes numbers).
+    const timer = setTimeout(() => { void this.sweep(); }, 5000);
+    (timer as { unref?: () => void }).unref?.();
   }
 }

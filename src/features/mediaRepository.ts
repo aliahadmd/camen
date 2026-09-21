@@ -15,8 +15,12 @@ import type { NewShot, ShotRow } from '../data/db';
  *     recovered row — the hook fills them later via updateAssets.
  *  4. On ANY failure after the journal write, the journal is RETAINED and the
  *     archive file is never deleted — recover() retries on next startup.
- *  5. recover() never deletes user media; journals whose source AND archive
- *     are both missing are kept and reported explicitly, not removed.
+ *  5. recover() never deletes ARCHIVE media; journals whose source AND archive
+ *     are both missing are kept and reported explicitly, not removed. Once a
+ *     replay fully completes (pixels verified + indexed + journal retired) the
+ *     redundant CACHE source is reclaimed — its owning app instance is gone.
+ *     A source shared by sibling journals (AEB brackets) is only reclaimed
+ *     after the LAST journal referencing it retires.
  *  6. Legacy orphan files in the archive root (pre-repository saves) are
  *     conservatively imported with honest metadata — dimensions are parsed
  *     from real bytes or left 0/unknown, never fabricated.
@@ -361,6 +365,10 @@ export function createMediaRepository(
       await io.rename(j.stagingPath, j.archivePath);
       return true;
     }
+    // A staging copy that can never be promoted is dead weight inside the
+    // ARCHIVE dir (which is not OS-managed cache) — reclaim it. The journal
+    // itself is retained so the failure stays visible in the report.
+    if (await io.exists(j.stagingPath)) await io.deleteFile(j.stagingPath);
     return false;
   }
 
@@ -461,18 +469,32 @@ export function createMediaRepository(
       await ensureDirs();
 
       const journalOwnedNames = new Set<string>();
+      const entries: Array<{ path: string; j: Journal | null }> = [];
       for (const name of await listJournals()) {
-        journalOwnedNames.add(name.replace(/\.journal\.json$/, ''));
+        journalOwnedNames.add(name.slice(0, -JOURNAL_SUFFIX.length));
         const jPath = `${journalDir}/${name}`;
         const j = await readJournal(jPath);
+        entries.push({ path: jPath, j });
         if (!j) {
           report.failed.push({
             id: name,
             stage: 'journal',
             reason: 'unreadable journal entry — kept for inspection',
           });
-          continue;
         }
+      }
+
+      // Sibling journals can share one cache source (AEB brackets processed
+      // from the same capture file) — a source may only be reclaimed once
+      // the LAST journal referencing it has retired.
+      const sourceRefs = new Map<string, number>();
+      for (const { j } of entries) {
+        if (!j) continue;
+        sourceRefs.set(j.sourceUri, (sourceRefs.get(j.sourceUri) ?? 0) + 1);
+      }
+
+      for (const { path: jPath, j } of entries) {
+        if (!j) continue;
         try {
           const pixels = await ensureArchivePixels(j);
           if (!pixels) {
@@ -488,6 +510,12 @@ export function createMediaRepository(
           const id = await indexArchivedShot(j);
           if (id === null) throw new Error('Archive index unavailable');
           await io.deleteFile(jPath);
+          // The replay owns the cache source now (its creating process is
+          // gone) — reclaim it once no sibling journal still references it
+          // so recovered saves don't leak full-size JPEGs.
+          const left = (sourceRefs.get(j.sourceUri) ?? 1) - 1;
+          sourceRefs.set(j.sourceUri, left);
+          if (left <= 0) await io.deleteFile(j.sourceUri);
           report.completed.push(j.id);
         } catch (e) {
           // Transient failure (e.g. DB unavailable): retain the journal and

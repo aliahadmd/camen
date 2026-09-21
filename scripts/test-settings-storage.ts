@@ -31,4 +31,23 @@ assert.equal(store.load().length, 2);
 fail = false;
 await Promise.all([store.delete(a.id), store.delete(b.id)]);
 assert.deepEqual(store.load(), []);
-console.log('Settings/storage regressions passed: malformed JSON, migration, neutral recipes, concurrent writes, cache rollback.');
+// A corrupt blob must never be overwritten by an emptied list — writes refuse
+// until the storage reads as valid JSON again.
+data = '{truncated';
+const guarded = createPresetStore({ getItem: async () => data, setItem: async (_key, value) => { data = value; } }, () => 1);
+await assert.rejects(guarded.save('X', {}), /corrupt/);
+await assert.rejects(guarded.delete('whatever'), /corrupt/);
+assert.equal(data, '{truncated', 'corrupt blob stays untouched');
+assert.deepEqual(guarded.load(), []);
+data = '[{"id":"u1-1","name":"Kept","develop":{}}]';
+assert.deepEqual(guarded.load(), []); // stale cache until refresh
+assert.equal((await guarded.refresh())[0].name, 'Kept');
+await guarded.save('Y', {});
+assert.equal(JSON.parse(data!).length, 2, 'writes resume once the blob is valid');
+// A preset id that resolves to nothing must not survive hydration.
+const coerced = loadSettingsValue({ preset: 'ghost', presetSub: 'nope' }, defaults, () => ({}));
+assert.equal(coerced.preset, 'standard');
+assert.equal(coerced.presetSub, 'standard');
+assert.equal(loadSettingsValue({ preset: 'night' }, defaults, () => ({})).preset, 'night');
+assert.equal(loadSettingsValue({ preset: 'user:u1-1' }, defaults, () => ({})).preset, 'user:u1-1');
+console.log('Settings/storage regressions passed: malformed JSON, migration, neutral recipes, concurrent writes, cache rollback, corrupt-blob guard, preset-id validation.');

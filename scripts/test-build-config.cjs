@@ -46,6 +46,28 @@ test('malformed managed blocks fail closed', () => {
   assert.throws(() => plugin.patchAppGradle(plugin.patchAppGradle(fresh) + '// @generated begin camen-release'), /Malformed/);
 });
 
+test('gradle.properties pins the single-device arm64 ABI, preserving other entries', () => {
+  const parsed = (contents) => plugin.patchGradleProperties(
+    contents.split('\n').filter(Boolean).map((line) => {
+      if (line.startsWith('#')) return { type: 'comment', value: line.slice(1).trimStart() };
+      const eq = line.indexOf('=');
+      return { type: 'property', key: line.slice(0, eq), value: line.slice(eq + 1) };
+    }),
+  );
+  // Existing four-ABI template line is replaced in place.
+  const out = parsed('enableProguardInReleaseBuilds=false\nreactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64\nnewArchEnabled=true');
+  const arch = out.filter((item) => item.type === 'property' && item.key === 'reactNativeArchitectures');
+  assert.equal(arch.length, 1);
+  assert.equal(arch[0].value, 'arm64-v8a');
+  assert.ok(out.some((item) => item.type === 'property' && item.key === 'newArchEnabled'));
+  // Missing line is appended.
+  const added = parsed('newArchEnabled=true');
+  assert.equal(added.at(-1).key, 'reactNativeArchitectures');
+  assert.equal(added.at(-1).value, 'arm64-v8a');
+  // Idempotent.
+  assert.equal(plugin.patchGradleProperties(plugin.patchGradleProperties([])).length, 1);
+});
+
 test('plugin registers Expo Gradle mods without reading signing environment', () => {
   const prior = process.env.CAMEN_RELEASE_STORE_PASSWORD;
   process.env.CAMEN_RELEASE_STORE_PASSWORD = 'fixture-secret-do-not-serialize';
@@ -53,6 +75,7 @@ test('plugin registers Expo Gradle mods without reading signing environment', ()
     const config = plugin({ name: 'fixture', slug: 'fixture' });
     assert.equal(typeof config.mods.android.appBuildGradle, 'function');
     assert.equal(typeof config.mods.android.projectBuildGradle, 'function');
+    assert.equal(typeof config.mods.android.gradleProperties, 'function');
     assert.ok(!JSON.stringify(config).includes(process.env.CAMEN_RELEASE_STORE_PASSWORD));
     assert.ok(!plugin.patchAppGradle(fresh).includes(process.env.CAMEN_RELEASE_STORE_PASSWORD));
   } finally {
